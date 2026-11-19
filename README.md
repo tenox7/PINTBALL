@@ -3,6 +3,8 @@
 3D Pinball for Windows - Space Cadet for [PINT 4.0](https://github.com/tenox7/pint),
 Windows NT 4.0 on ARM (Raspberry Pi 2, 3 and 4).
 
+![PINTBALL on PINT 4.0, on a Raspberry Pi 2](pintball.png)
+
 PINTBALL is a port of [SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball),
 the reverse engineered source code of the game, to plain Win32:
 
