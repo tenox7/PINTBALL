@@ -1,85 +1,39 @@
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
+// Common header of the game. The PINT port uses only Win32 and the C run-time
+// of Windows NT 4.0; pintstl.h gives the small part of the C++ library that
+// the game needs.
 
 #ifndef PCH_H
 #define PCH_H
 
-
-// GCC does not have *_s functions
 #define _CRT_SECURE_NO_WARNINGS
 
-// TODO: add headers that you want to pre-compile here
-#include <cstdio>
-#include <cassert>
-#include <cmath>
-#include <cstdint>
-#include <type_traits> /*For control template*/
-#include <chrono>
-#include <iostream>
-//#include <iomanip>
-//#include <cstdlib>
-#include <vector>
-#include <algorithm>
-#include <cstring>
-#include <string>
-#include <thread>
-#include <map>
-#include <unordered_map>
-#include <initializer_list>
-//#include <array>
+// The game uses std::min and std::max, not the min and max macros.
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#define STRICT
+#include <windows.h>
+#include <mmsystem.h>
+// mmsystem.h makes PlaySound a macro, and the game has Sound::PlaySound.
+#undef PlaySound
 
-#define SDL_MAIN_HANDLED
-#include "SDL.h"
-#include <SDL_mixer.h>
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 
-// MIX_INIT_FLUIDSYNTH was renamed to MIX_INIT_MID in SDL_mixer v2.0.2
-// Older versions of SDL_mixer did not have SDL_MIXER_VERSION_ATLEAST
-constexpr int MIX_INIT_MID_Proxy =
-#if SDL_VERSIONNUM(SDL_MIXER_MAJOR_VERSION, SDL_MIXER_MINOR_VERSION, SDL_MIXER_PATCHLEVEL) >= SDL_VERSIONNUM(2, 0, 2)
-	MIX_INIT_MID;
-#else
-	MIX_INIT_FLUIDSYNTH;
+#include "pintstl.h"
+
+// The headers of Windows NT 4.0 do not have these keys.
+#ifndef VK_OEM_PERIOD
+#define VK_OEM_PERIOD 0xBE
+#endif
+#ifndef VK_OEM_2
+#define VK_OEM_2 0xBF
 #endif
 
-//https://github.com/ocornut/imgui 59b63defe5421642fb0cdcfd1fa850fc85a13791 + patches
-#include "imgui.h"
-#include "imgui_internal.h"
-#include "imgui_impl_sdl.h"
-
-// imgui_impl_sdlrenderer is faster and more accurate, but it requires newer SDL.
-#if SDL_VERSION_ATLEAST(2, 0, 17)
-#include "imgui_impl_sdlrenderer.h"
-constexpr const char* ImGuiRender = "HW";
-inline void ImGui_Render_Init(SDL_Renderer* renderer) { ImGui_ImplSDLRenderer_Init(renderer); }
-inline void ImGui_Render_Shutdown() { ImGui_ImplSDLRenderer_Shutdown(); }
-inline void ImGui_Render_NewFrame() { ImGui_ImplSDLRenderer_NewFrame(); }
-inline void ImGui_Render_RenderDrawData(ImDrawData* draw_data) { ImGui_ImplSDLRenderer_RenderDrawData(draw_data); }
-#else
-//https://github.com/Tyyppi77/imgui_sdl 01deb04b102b6a1c15c7fdec1977a2c96a885e6f + patches
-#include "imgui_sdl.h"
-constexpr const char* ImGuiRender = "SW";
-inline void ImGui_Render_Init(SDL_Renderer* renderer) { ImGuiSDL::Initialize(renderer, 0, 0); }
-inline void ImGui_Render_Shutdown() { ImGuiSDL::Deinitialize(); }
-inline void ImGui_Render_NewFrame() { }
-inline void ImGui_Render_RenderDrawData(ImDrawData* draw_data) { ImGuiSDL::Render(draw_data); }
-#endif
-
-
-typedef char* LPSTR;
-typedef const char* LPCSTR;
-
-constexpr char PathSeparator =
-#ifdef _WIN32
-'\\';
-#else
-'/';
-#endif
-
+constexpr char PathSeparator = '\\';
 
 /*Use (void) to silent unused warnings.*/
 #define assertm(exp, msg) assert(((void)msg, exp))
@@ -110,26 +64,11 @@ const T& Clamp(const T& n, const T& lower, const T& upper)
 	return std::max(lower, std::min(n, upper));
 }
 
-// UTF-8 path adapter for fopen on Windows, implemented in SpaceCadetPinball.cpp
-#ifdef _WIN32
-extern FILE* fopenu(const char* path, const char* opt);
-#else
+// File names are in the ANSI code page, as Windows NT 4.0 gives them.
 inline FILE* fopenu(const char* path, const char* opt)
 {
 	return fopen(path, opt);
 }
-#endif
-
-// Platform specific data paths not found in SDL
-constexpr const char* PlatformDataPaths[2] = 
-{
-	#ifdef _WIN32
-	nullptr
-	#else
-	"/usr/local/share/SpaceCadetPinball/",
-	"/usr/share/SpaceCadetPinball/"
-	#endif
-};
 
 constexpr float Pi = 3.14159265358979323846f;
 

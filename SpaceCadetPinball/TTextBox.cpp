@@ -8,6 +8,7 @@
 #include "render.h"
 #include "score.h"
 #include "timer.h"
+#include "wintext.h"
 
 
 TTextBox::TTextBox(TPinballTable* table, int groupIndex) : TPinballComponent(table, groupIndex, true)
@@ -143,43 +144,83 @@ void TTextBox::Display(const char* text, float time, bool lowPriority)
 	}
 }
 
-void TTextBox::DrawImGui()
+// Full Tilt has no bitmap font: draw the text with a GDI font into the vscreen.
+void TTextBox::DrawSystemText(const char* text)
 {
-	// Do nothing when using a font (the text will be rendered to VScreen in TTextBox::Draw)
-	if (Font || !CurrentMessage)
+	auto vscreen = render::vscreen;
+	auto x0 = std::max(OffsetX, 0), y0 = std::max(OffsetY, 0);
+	auto x1 = std::min(OffsetX + Width, vscreen->Width), y1 = std::min(OffsetY + Height, vscreen->Height);
+	auto width = x1 - x0, height = y1 - y0;
+	if (width <= 0 || height <= 0)
 		return;
 
-	char windowName[64];
-	SDL_Rect rect;
-	ImGuiWindowFlags window_flags =
-		ImGuiWindowFlags_NoBackground |
-		ImGuiWindowFlags_NoDecoration |
-		ImGuiWindowFlags_NoSavedSettings |
-		ImGuiWindowFlags_NoFocusOnAppearing |
-		ImGuiWindowFlags_NoInputs;
+	BITMAPINFO info{};
+	info.bmiHeader.biSize = sizeof info.bmiHeader;
+	info.bmiHeader.biWidth = width;
+	info.bmiHeader.biHeight = -height; // top-down, as the vscreen
+	info.bmiHeader.biPlanes = 1;
+	info.bmiHeader.biBitCount = 32;
+	info.bmiHeader.biCompression = BI_RGB;
 
-	rect.x = OffsetX;
-	rect.y = OffsetY;
-	rect.w = Width;
-	rect.h = Height;
-
-	rect = fullscrn::GetScreenRectFromPinballRect(rect);
-
-	ImGui::SetNextWindowPos(ImVec2(static_cast<float>(rect.x), static_cast<float>(rect.y)));
-	ImGui::SetNextWindowSize(ImVec2(static_cast<float>(rect.w), static_cast<float>(rect.h)));
-
-	// Use the pointer to generate a window unique name per text box
-	snprintf(windowName, sizeof(windowName), "TTextBox_%p", static_cast<void*>(this));
-	if (ImGui::Begin(windowName, nullptr, window_flags))
+	auto dc = CreateCompatibleDC(nullptr);
+	if (!dc)
+		return;
+	void* bits = nullptr;
+	auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+	if (!bitmap || !bits)
 	{
-		ImGui::SetWindowFontScale(fullscrn::GetScreenToPinballRatio());
-
-		// ToDo: centered text in FT
-		ImGui::PushStyleColor(ImGuiCol_Text, pb::TextBoxColor);
-		ImGui::TextWrapped("%s", CurrentMessage->Text);
-		ImGui::PopStyleColor();
+		if (bitmap)
+			DeleteObject(bitmap);
+		DeleteDC(dc);
+		return;
 	}
-	ImGui::End();
+	auto oldBitmap = SelectObject(dc, bitmap);
+
+	// The background of the box goes into the DIB, then the text on it.
+	auto pixels = static_cast<ColorRgba*>(bits);
+	for (int y = 0; y < height; y++)
+		memcpy(pixels + y * width, &vscreen->BmpBufPtr1[(y0 + y) * vscreen->Stride + x0], width * sizeof(ColorRgba));
+
+	// The size of the font follows the table resolution.
+	static HFONT fonts[3]{};
+	auto resolution = Clamp(fullscrn::GetResolution(), 0, 2);
+	if (!fonts[resolution])
+	{
+		auto fontHeight = 11 * fullscrn::resolution_array[resolution].TableHeight /
+			fullscrn::resolution_array[0].TableHeight;
+		fonts[resolution] = CreateFontW(-fontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+		                                DEFAULT_PITCH | FF_SWISS, L"Arial");
+	}
+	auto oldFont = fonts[resolution] ? SelectObject(dc, fonts[resolution]) : nullptr;
+	SetBkMode(dc, TRANSPARENT);
+	SetTextColor(dc, pb::TextBoxColor);
+
+	auto wide = wintext::ToWide(text);
+	RECT rect{0, 0, width, height};
+	UINT format = DT_WORDBREAK | DT_NOPREFIX;
+	if (pb::FullTiltMode)
+	{
+		// Textboxes in FT display texts centered
+		format |= DT_CENTER;
+		auto measure = rect;
+		DrawTextW(dc, wide.data(), -1, &measure, format | DT_CALCRECT);
+		auto textHeight = measure.bottom - measure.top;
+		if (textHeight < height)
+			rect.top = (height - textHeight) / 2;
+	}
+	DrawTextW(dc, wide.data(), -1, &rect, format);
+	GdiFlush();
+
+	for (int y = 0; y < height; y++)
+		memcpy(&vscreen->BmpBufPtr1[(y0 + y) * vscreen->Stride + x0], pixels + y * width, width * sizeof(ColorRgba));
+	render::MarkDirty(x0, y0, width, height);
+
+	if (oldFont)
+		SelectObject(dc, oldFont);
+	SelectObject(dc, oldBitmap);
+	DeleteObject(bitmap);
+	DeleteDC(dc);
 }
 
 void TTextBox::Draw()
@@ -226,7 +267,7 @@ void TTextBox::Draw()
 	{
 		if (!Font)
 		{
-			// Immediate mode drawing using system font is handled by TTextBox::DrawImGui
+			DrawSystemText(CurrentMessage->Text);
 			return;
 		}
 

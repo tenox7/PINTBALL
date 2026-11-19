@@ -16,30 +16,6 @@ enum class GameModes
 	GameOver = 2,
 };
 
-class UsingSdlHint
-{
-public:
-	explicit UsingSdlHint(const char* name, const char* value)
-		: HintName(name)
-	{
-		auto originalValue = SDL_GetHint(name);
-		if (originalValue)
-			strncpy(OriginalValue, originalValue, sizeof OriginalValue - 1);
-
-		SDL_SetHint(name, value);
-	}
-
-	~UsingSdlHint()
-	{
-		if (OriginalValue[0])
-			SDL_SetHint(HintName, OriginalValue);
-	}
-
-private:
-	char OriginalValue[40]{};
-	const char* HintName;
-};
-
 class pb
 {
 public:
@@ -52,7 +28,7 @@ public:
 	static TPinballTable* MainTable;
 	static bool FullTiltMode, FullTiltDemoMode;
 	static std::string DatFileName, BasePath;
-	static ImU32 TextBoxColor;
+	static COLORREF TextBoxColor;
 	static int quickFlag;
 	static TTextBox *InfoTextBox, *MissTextBox;
 
@@ -80,7 +56,7 @@ public:
 	static LPCSTR get_rc_string(Msg uID);
 	static int get_rc_int(Msg uID, int* dst);
 	static std::string make_path_name(const std::string& fileName);
-	static void ShowMessageBox(Uint32 flags, LPCSTR title, LPCSTR message);
+	static void ShowMessageBox(UINT flags, LPCSTR title, LPCSTR message);
 private:
 	static bool demo_mode;
 	static float IdleTimerMs;

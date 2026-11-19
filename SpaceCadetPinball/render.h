@@ -40,27 +40,47 @@ public:
 	static gdrv_bitmap8 *vscreen, *background_bitmap;
 	static zmap_header_type* background_zmap;
 	static int zmap_offsetX, zmap_offsetY;
-	static SDL_Rect DestinationRect;
 
 	static void init(gdrv_bitmap8* bmp, int width, int height);
 	static void uninit();
-	static void recreate_screen_texture();
 	static void update();
 	static void AddSprite(render_sprite& sprite);
 	static void RemoveSprite(render_sprite& sprite);
 	static void set_background_zmap(zmap_header_type* zMap, int offsetX, int offsetY);
 	static void shift(int offsetX, int offsetY);
 	static void build_occlude_list();
-	static void SpriteViewer(bool* show);
-	static void PresentVScreen();
+
+	// Output with GDI. The vscreen is scaled into a DIB section of the
+	// destination size; only the parts of the vscreen that changed are
+	// scaled again and copied to the window.
+	static void SetDestination(int x, int y, int width, int height);
+	static void MarkDirty(int x, int y, int width, int height);
+	static void PresentVScreen(HDC dc);
+	static void PaintWindow(HDC dc);
 private:
+	static constexpr int MaxDirtyRects = 32;
+
 	static std::vector<render_sprite*> sprite_list, ball_list;
 	static int offset_x, offset_y;
 	static rectangle_type vscreen_rect;
 	static gdrv_bitmap8* ball_bitmap[20];
 	static zmap_header_type* zscreen;
 
+	static int DestX, DestY, DestWidth, DestHeight;
+	static HDC BackDC;
+	static HBITMAP BackBitmap, BackOldBitmap;
+	static ColorRgba* BackPixels;
+	static int BackWidth, BackHeight, MapSrcWidth, MapSrcHeight;
+	static std::vector<int> MapX, MapY;
+	static RECT DirtyRects[MaxDirtyRects];
+	static int DirtyCount;
+	static bool FullDirty, ShiftedLast;
+
 	static void repaint(const render_sprite& sprite);
 	static void paint_balls();
 	static void unpaint_balls();
+	static bool PrepareBackBuffer();
+	static void ReleaseBackBuffer();
+	static void ScaleArea(int dstX0, int dstY0, int dstX1, int dstY1);
+	static void ScaleShifted();
 };

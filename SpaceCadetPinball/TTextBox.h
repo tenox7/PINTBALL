@@ -22,7 +22,6 @@ public:
 	int Message(MessageCode code, float value) override;
 	void Clear(bool lowPriorityOnly = false);
 	void Display(const char* text, float time, bool lowPriority = false);
-	void DrawImGui();
 
 private:
 	struct LayoutResult
@@ -34,5 +33,6 @@ private:
 	static void TimerExpired(int timerId, void* caller);
 
 	void Draw();
+	void DrawSystemText(const char* text);
 	LayoutResult LayoutTextLine(char* textStart) const;
 };

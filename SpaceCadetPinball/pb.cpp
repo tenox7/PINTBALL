@@ -27,6 +27,7 @@
 #include "TPinballTable.h"
 #include "TTextBox.h"
 #include "translations.h"
+#include "wintext.h"
 
 TPinballTable* pb::MainTable = nullptr;
 DatFile* pb::record_table = nullptr;
@@ -37,7 +38,7 @@ float pb::BallMaxSpeed, pb::BallHalfRadius, pb::BallToBallCollisionDistance;
 float pb::IdleTimerMs = 0;
 bool pb::FullTiltMode = false, pb::FullTiltDemoMode = false, pb::cheat_mode = false, pb::demo_mode = false, pb::CreditsActive = false;
 std::string pb::DatFileName, pb::BasePath;
-ImU32 pb::TextBoxColor;
+COLORREF pb::TextBoxColor = RGB(255, 255, 255);
 int pb::quickFlag = 0;
 TTextBox *pb::InfoTextBox, *pb::MissTextBox;
 
@@ -113,7 +114,7 @@ int pb::init()
 	auto fontColor = get_rc_string(Msg::TextBoxColor);
 	if (fontColor)
 		sscanf(fontColor, "%d %d %d", &red, &green, &blue);
-	TextBoxColor = IM_COL32(red, green, blue, 255);
+	TextBoxColor = RGB(red, green, blue);
 
 	return 0;
 }
@@ -561,6 +562,20 @@ void pb::InputUp(GameInput input)
 	}
 }
 
+// Input values of the keyboard are virtual-key codes. The cheat codes are
+// lowercase texts: give the letters, digits and space as characters, and 0
+// for all other keys.
+static char VirtualKeyToCheatChar(int virtualKey)
+{
+	if (virtualKey >= 'A' && virtualKey <= 'Z')
+		return static_cast<char>(virtualKey - 'A' + 'a');
+	if ((virtualKey >= '0' && virtualKey <= '9') || virtualKey == VK_SPACE)
+		return static_cast<char>(virtualKey);
+	if (virtualKey == VK_TAB)
+		return '\t';
+	return 0;
+}
+
 void pb::InputDown(GameInput input)
 {
 	if (options::WaitingForInput())
@@ -584,7 +599,7 @@ void pb::InputDown(GameInput input)
 	IdleTimerMs = 0;
 
 	if (input.Type == InputTypes::Keyboard)
-		control::pbctrl_bdoor_controller(static_cast<char>(input.Value));
+		control::pbctrl_bdoor_controller(VirtualKeyToCheatChar(input.Value));
 
 	for (const auto binding : bindings)
 	{
@@ -619,33 +634,33 @@ void pb::InputDown(GameInput input)
 	{
 		switch (input.Value)
 		{
-		case 'b':
+		case 'B':
 			{
 				vector2 pos{6.0f, 7.0f};
 				if (!MainTable->BallCountInRect(pos, MainTable->CollisionCompOffset * 1.2f) && MainTable->AddBall(pos))
 					MainTable->MultiballCount++;
 				break;
 			}
-		case 'h':
+		case 'H':
 			{
 				high_score_struct entry{{0}, 1000000000};
 				strncpy(entry.Name, get_rc_string(Msg::STRING127), sizeof entry.Name - 1);
 				high_score::show_and_set_high_score_dialog({entry, 1});
 				break;
 			}
-		case 'r':
+		case 'R':
 			control::cheat_bump_rank();
 			break;
-		case 's':
+		case 'S':
 			MainTable->AddScore(static_cast<int>(RandFloat() * 1000000.0f));
 			break;
-		case SDLK_F12:
+		case VK_F12:
 			MainTable->port_draw();
 			break;
-		case 'i':
+		case 'I':
 			MainTable->LightGroup->Message(MessageCode::TLightFtTmpOverrideOn, 1.0f);
 			break;
-		case 'j':
+		case 'J':
 			MainTable->LightGroup->Message(MessageCode::TLightFtTmpOverrideOff, 1.0f);
 			break;
 		}
@@ -767,10 +782,10 @@ std::string pb::make_path_name(const std::string& fileName)
 	return BasePath + fileName;
 }
 
-void pb::ShowMessageBox(Uint32 flags, LPCSTR title, LPCSTR message)
+void pb::ShowMessageBox(UINT flags, LPCSTR title, LPCSTR message)
 {
-	fprintf(flags == SDL_MESSAGEBOX_ERROR ? stderr : stdout, "BL error: %s\n%s\n", title, message);
-	SDL_ShowSimpleMessageBox(flags, title, message, winmain::MainWindow);
+	MessageBoxW(winmain::MainWindow, wintext::ToWide(message).data(), wintext::ToWide(title).data(),
+	            flags | MB_OK | MB_SETFOREGROUND);
 }
 
 float pb::BallToBallCollision(const ray_type& ray, const TBall& ball, TEdgeSegment** edge, float collisionDistance)

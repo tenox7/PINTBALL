@@ -2,27 +2,25 @@
 #include "winmain.h"
 
 #include "control.h"
-#include "EmbeddedData.h"
 #include "fullscrn.h"
+#include "high_score.h"
 #include "midi.h"
 #include "options.h"
 #include "pb.h"
 #include "render.h"
 #include "Sound.h"
 #include "translations.h"
-#include "font_selection.h"
+#include "wintext.h"
 
 constexpr const char* winmain::Version;
 
-SDL_Window* winmain::MainWindow = nullptr;
-SDL_Renderer* winmain::Renderer = nullptr;
-ImGuiIO* winmain::ImIO = nullptr;
+HINSTANCE winmain::Instance = nullptr;
+HWND winmain::MainWindow = nullptr;
 
 int winmain::return_value = 0;
 bool winmain::bQuit = false;
 bool winmain::activated = false;
 bool winmain::DispFrameRate = false;
-bool winmain::DispGRhistory = false;
 bool winmain::single_step = false;
 bool winmain::has_focus = true;
 int winmain::last_mouse_x;
@@ -32,197 +30,176 @@ bool winmain::no_time_loss = false;
 
 bool winmain::restart = false;
 
-std::vector<float> winmain::gfrDisplay{};
-unsigned winmain::gfrOffset = 0;
-float winmain::gfrWindow = 5.0f;
 bool winmain::ShowAboutDialog = false;
-bool winmain::ShowImGuiDemo = false;
-bool winmain::ShowSpriteViewer = false;
 bool winmain::ShowExitPopup = false;
 bool winmain::LaunchBallEnabled = true;
 bool winmain::HighScoresEnabled = true;
 bool winmain::DemoActive = false;
-int winmain::MainMenuHeight = 0;
-std::string winmain::FpsDetails, winmain::PrevSdlError;
-unsigned winmain::PrevSdlErrorCount = 0;
 double winmain::UpdateToFrameRatio;
-winmain::DurationMs winmain::TargetFrameTime;
+double winmain::TargetFrameTime;
 optionsStruct& winmain::Options = options::Options;
-winmain::DurationMs winmain::SpinThreshold = DurationMs(0.005);
+double winmain::SpinThreshold = 0.005;
 WelfordState winmain::SleepState{};
 int winmain::CursorIdleCounter = 0;
+bool winmain::CursorHidden = false;
+POINT winmain::LastCursorPos{-1, -1};
+HMENU winmain::MainMenu = nullptr;
+double winmain::CounterToMs = 0;
 
-int winmain::WinMain(LPCSTR lpCmdLine)
+namespace
 {
-	std::set_new_handler(memalloc_failure);
+	const wchar_t WindowClassName[] = L"PINTBALL";
 
-	printf("Game version: %s\n", Version);
-	printf("Command line: %s\n", lpCmdLine);
-	printf("Compiled with: SDL %d.%d.%d;", SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL);
-	printf(" SDL_mixer %d.%d.%d;", SDL_MIXER_MAJOR_VERSION, SDL_MIXER_MINOR_VERSION, SDL_MIXER_PATCHLEVEL);
-	printf(" ImGui %s %s\n", IMGUI_VERSION, ImGuiRender);
-
-	// SDL init
-	SDL_SetMainReady();
-	if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_AUDIO | SDL_INIT_VIDEO |
-		SDL_INIT_EVENTS | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0)
+	// The ids of the menu items, beside the ids of Menu1.
+	enum MenuIds
 	{
-		pb::ShowMessageBox(SDL_MESSAGEBOX_ERROR, "Could not initialize SDL2", SDL_GetError());
-		return 1;
+		LanguageMenuId = 1000,
+		SoundVolumeMenuId = 1100,
+		SoundChannelsMenuId = 1200,
+		MusicVolumeMenuId = 1300,
+		UpsMenuId = 1400,
+		FpsMenuId = 1500,
+		DefaultRatesMenuId = 1600,
+		UncappedUpsMenuId,
+		PreciseSleepMenuId,
+		HideCursorMenuId,
+		ResetOptionsMenuId,
+		CheatMenuId = 1700,
+		BindingMenuId = 1800,
+		// The item of the system menu. WM_SYSCOMMAND keeps the 4 low bits for the system.
+		SystemShowMenuId = 0x0E00,
+	};
+
+	const int VolumeSteps = 10;
+	const int SoundChannelValues[] = {1, 2, 4, 8, 16, 24, 32};
+	const int UpsValues[] = {60, 90, 120, 180, 240, 300, 360};
+	const int FpsValues[] = {60, 75, 90, 100, 120, 144, 180, 240, 300, 360};
+	const char* const CheatNames[] = {"hidden test", "1max", "bmax", "gmax", "rmax", "quote", "easy mode"};
+	const int CheatHiddenTest = 0, CheatBmax = 2, CheatQuote = 5, CheatEasyMode = 6;
+
+	template <class T, size_t N>
+	constexpr int CountOf(const T (&)[N]) { return static_cast<int>(N); }
+
+	int MouseX(LPARAM lParam) { return static_cast<short>(LOWORD(lParam)); }
+	int MouseY(LPARAM lParam) { return static_cast<short>(HIWORD(lParam)); }
+
+	void AppendItem(HMENU menu, UINT id, const std::string& text)
+	{
+		AppendMenuW(menu, MF_STRING, id, wintext::ToMenuText(text).data());
 	}
+
+	void AppendItem(HMENU menu, Menu1 id, Msg text)
+	{
+		AppendItem(menu, static_cast<UINT>(id), pb::get_rc_string(text));
+	}
+
+	void AppendPopup(HMENU menu, HMENU popup, const std::string& text)
+	{
+		AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT>(popup), wintext::ToMenuText(text).data());
+	}
+
+	void AppendSeparator(HMENU menu)
+	{
+		AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+	}
+
+	void CheckItem(HMENU menu, UINT id, bool checked)
+	{
+		CheckMenuItem(menu, id, MF_BYCOMMAND | (checked ? MF_CHECKED : MF_UNCHECKED));
+	}
+
+	void CheckItem(HMENU menu, Menu1 id, bool checked)
+	{
+		CheckItem(menu, static_cast<UINT>(id), checked);
+	}
+
+	void EnableItem(HMENU menu, Menu1 id, bool enabled)
+	{
+		EnableMenuItem(menu, static_cast<UINT>(id), MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED));
+	}
+
+	int VolumeToStep(int volume)
+	{
+		return (volume * VolumeSteps + options::MaxVolume / 2) / options::MaxVolume;
+	}
+}
+
+int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
+{
+	Instance = instance;
+	_set_new_handler(NewHandler);
+	if (!lpCmdLine)
+		lpCmdLine = "";
 
 	pb::quickFlag = strstr(lpCmdLine, "-quick") != nullptr;
+	auto noAudio = strstr(lpCmdLine, "-noaudio") != nullptr;
 
-	// SDL window
-	SDL_Window* window = SDL_CreateWindow
-	(
-		pb::get_rc_string(Msg::STRING139),
-		SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-		800, 556,
-		SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE
-	);
-	MainWindow = window;
-	if (!window)
+	// Sleep(1) sleeps 1 ms; the performance counter gives the time.
+	timeBeginPeriod(1);
+	LARGE_INTEGER frequency;
+	if (QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0)
+		CounterToMs = 1000.0 / static_cast<double>(frequency.QuadPart);
+
+	WNDCLASSW windowClass{};
+	windowClass.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+	windowClass.lpfnWndProc = WindowProc;
+	windowClass.hInstance = instance;
+	windowClass.hIcon = LoadIconW(instance, L"ICON_1");
+	windowClass.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+	windowClass.lpszClassName = WindowClassName;
+	if (!RegisterClassW(&windowClass))
 	{
-		pb::ShowMessageBox(SDL_MESSAGEBOX_ERROR, "Could not create window", SDL_GetError());
+		pb::ShowMessageBox(MB_ICONHAND, "Could not create window", "RegisterClass failed.");
+		timeEndPeriod(1);
 		return 1;
 	}
 
-	// If HW fails, fallback to SW SDL renderer.
-	SDL_Renderer* renderer = nullptr;
-	auto swOffset = strstr(lpCmdLine, "-sw") != nullptr ? 1 : 0;
-	for (int i = swOffset; i < 2 && !renderer; i++)
+	MainWindow = CreateWindowExW(0, WindowClassName, L"PINTBALL", WS_OVERLAPPEDWINDOW,
+	                             CW_USEDEFAULT, CW_USEDEFAULT, 800, 556, nullptr, nullptr, instance, nullptr);
+	if (!MainWindow)
 	{
-		Renderer = renderer = SDL_CreateRenderer
-		(
-			window,
-			-1,
-			i == 0 ? SDL_RENDERER_ACCELERATED : SDL_RENDERER_SOFTWARE
-		);
-	}
-	if (!renderer)
-	{
-		pb::ShowMessageBox(SDL_MESSAGEBOX_ERROR, "Could not create renderer", SDL_GetError());
+		pb::ShowMessageBox(MB_ICONHAND, "Could not create window", "CreateWindow failed.");
+		timeEndPeriod(1);
 		return 1;
 	}
-	SDL_RendererInfo rendererInfo{};
-	if (!SDL_GetRendererInfo(renderer, &rendererInfo))
-		printf("Using SDL renderer: %s\n", rendererInfo.name);
-	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
 
-	auto prefPath = SDL_GetPrefPath("", "SpaceCadetPinball");
-	auto basePath = SDL_GetBasePath();
-
-	// SDL mixer init
-	bool mixOpened = false, noAudio = strstr(lpCmdLine, "-noaudio") != nullptr;
-	if (!noAudio)
+	// The system menu can show the menu bar again, when it is hidden.
+	auto systemMenu = GetSystemMenu(MainWindow, FALSE);
+	if (systemMenu)
 	{
-		if ((Mix_Init(MIX_INIT_MID_Proxy) & MIX_INIT_MID_Proxy) == 0)
-		{
-			printf("Could not initialize SDL MIDI, music might not work.\nSDL Error: %s\n", SDL_GetError());
-			SDL_ClearError();
-		}
-		if (Mix_OpenAudio(MIX_DEFAULT_FREQUENCY, MIX_DEFAULT_FORMAT, 2, 1024) != 0)
-		{
-			printf("Could not open audio device, continuing without audio.\nSDL Error: %s\n", SDL_GetError());
-			SDL_ClearError();
-		}
-		else
-			mixOpened = true;
+		AppendMenuW(systemMenu, MF_SEPARATOR, 0, nullptr);
+		AppendMenuW(systemMenu, MF_STRING, SystemShowMenuId, L"Show Menu");
 	}
 
-	{
-		// Load SDL Game Controller definitions from DB
-		unsigned decompressedSize{};
-		const auto controllerDb = ImFontAtlas::DecompressCompressedStbData(
-			EmbeddedData::SDL_GameControllerDB_compressed_data,
-			EmbeddedData::SDL_GameControllerDB_compressed_size,
-			decompressedSize);
-		auto rw = SDL_RWFromMem(controllerDb, decompressedSize);
-		const auto added = SDL_GameControllerAddMappingsFromRW(rw, 1);
-		IM_FREE(controllerDb);
-		if (added < 0)
-		{
-			printf("Could not load game controller DB.\nSDL Error: %s\n", SDL_GetError());
-			SDL_ClearError();
-		}
-	}
-
+	auto exeFolder = GetExeFolder();
+	auto pinballFolder = GetPinballFolder();
+	auto iniPath = exeFolder + "PINTBALL.INI";
 	auto resetAllOptions = strstr(lpCmdLine, "-reset") != nullptr;
+	auto firstStart = true;
 	do
 	{
 		restart = false;
 
-		// ImGui init
-		IMGUI_CHECKVERSION();
-		ImGui::CreateContext();
-		ImGuiIO& io = ImGui::GetIO();
-		ImIO = &io;
-		auto iniPath = std::string(prefPath) + "imgui_pb.ini";
-		io.IniFilename = iniPath.c_str();
-
-		// First option initialization step: just load settings from .ini. Needs ImGui context.
-		options::InitPrimary();
+		// First option initialization step: just load settings from .ini.
+		options::InitPrimary(iniPath);
 		if (resetAllOptions)
 		{
 			resetAllOptions = false;
 			options::ResetAllOptions();
 		}
+		wintext::SetText(MainWindow, pb::get_rc_string(Msg::STRING139));
 
-		if (!Options.FontFileName.V.empty())
-		{
-			ImVector<ImWchar> ranges;
-			translations::GetGlyphRange(&ranges);
-			ImFontConfig fontConfig{};
-
-			// ToDo: further tweak font options, maybe try imgui_freetype
-			fontConfig.OversampleV = 2;
-			fontConfig.OversampleH = 4;
-
-			// ToDo: improve font file test, checking if file exists is not enough
-			auto fontLoaded = false;
-			auto fileName = Options.FontFileName.V.c_str();
-			auto fileHandle = fopenu(fileName, "rb");
-			if (fileHandle)
-			{
-				fclose(fileHandle);
-
-				// ToDo: Bind font size to UI scale
-				if (io.Fonts->AddFontFromFileTTF(fileName, 13.f, &fontConfig, ranges.Data))
-					fontLoaded = true;
-			}
-
-			if (!fontLoaded)
-				printf("Failed to load font: %s, using embedded font.\n", fileName);
-			io.Fonts->Build();
-		}
-		ImGui_Render_Init(renderer);
-		ImGui::StyleColorsDark();
-
-		ImGui_ImplSDL2_InitForSDLRenderer(window, Renderer);
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-
-		// Data search order: WD, executable path, user pref path, platform specific paths.
-		std::vector<const char*> searchPaths
-		{
-			{
-				"",
-				basePath,
-				prefPath
-			}
-		};
-		searchPaths.insert(searchPaths.end(), std::begin(PlatformDataPaths), std::end(PlatformDataPaths));
+		// Data search order: WD, executable path, the Pinball folder of Windows NT.
+		std::vector<const char*> searchPaths{"", exeFolder.c_str(), pinballFolder.c_str()};
 		pb::SelectDatFile(searchPaths);
 
 		// Second step: run updates that depend on .DAT file selection
 		options::InitSecondary();
 
-		Sound::Init(mixOpened, Options.SoundChannels, Options.Sounds, Options.SoundVolume);
-		if (!mixOpened)
+		if (!Sound::Init(!noAudio, Options.SoundChannels, Options.Sounds, Options.SoundVolume))
 			Options.Sounds = false;
 
-		if (!midi::music_init(mixOpened, Options.MusicVolume))
+		if (!midi::music_init(!noAudio, Options.MusicVolume))
 			Options.Music = false;
 
 		if (pb::init())
@@ -236,7 +213,12 @@ int winmain::WinMain(LPCSTR lpCmdLine)
 					message = message + (path[0] ? path : "working directory") + "\n";
 				}
 			}
-			pb::ShowMessageBox(SDL_MESSAGEBOX_ERROR, "Could not load game data", message.c_str());
+			pb::ShowMessageBox(MB_ICONHAND, "Could not load game data", message.c_str());
+			midi::music_shutdown();
+			Sound::Close();
+			DestroyWindow(MainWindow);
+			MainWindow = nullptr;
+			timeEndPeriod(1);
 			return 1;
 		}
 
@@ -245,6 +227,8 @@ int winmain::WinMain(LPCSTR lpCmdLine)
 		pb::reset_table();
 		pb::firsttime_setup();
 
+		UpdateMenu();
+
 		if (strstr(lpCmdLine, "-fullscreen"))
 		{
 			Options.FullScreen = true;
@@ -252,11 +236,21 @@ int winmain::WinMain(LPCSTR lpCmdLine)
 
 		if (!Options.FullScreen)
 		{
+			// The client area gets the size of the table.
 			auto resInfo = &fullscrn::resolution_array[fullscrn::GetResolution()];
-			SDL_SetWindowSize(MainWindow, resInfo->TableWidth, resInfo->TableHeight);
+			RECT rect{0, 0, resInfo->TableWidth, resInfo->TableHeight};
+			AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, Options.ShowMenu ? TRUE : FALSE);
+			SetWindowPos(MainWindow, nullptr, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
+			             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 		}
-		SDL_ShowWindow(window);
+		if (firstStart)
+		{
+			firstStart = false;
+			ShowWindow(MainWindow, SW_SHOW);
+		}
 		fullscrn::set_screen_mode(Options.FullScreen);
+		fullscrn::window_size_changed();
+		UpdateWindow(MainWindow);
 
 		if (strstr(lpCmdLine, "-demo"))
 			pb::toggle_demo();
@@ -265,55 +259,62 @@ int winmain::WinMain(LPCSTR lpCmdLine)
 
 		MainLoop();
 
-		options::uninit();
 		midi::music_shutdown();
 		Sound::Close();
 		pb::uninit();
-
-		ImGui_Render_Shutdown();
-		ImGui_ImplSDL2_Shutdown();
-		ImGui::DestroyContext();
+		// After pb::uninit, which puts the high scores in the settings.
+		options::uninit();
 	}
 	while (restart);
 
-	if (!noAudio)
+	fullscrn::shutdown();
+	if (MainMenu)
 	{
-		if (mixOpened)
-			Mix_CloseAudio();
-		Mix_Quit();
+		SetMenu(MainWindow, nullptr);
+		DestroyMenu(MainMenu);
+		MainMenu = nullptr;
 	}
-
-	SDL_free(basePath);
-	SDL_free(prefPath);
-	SDL_DestroyRenderer(renderer);
-	SDL_DestroyWindow(window);
-	SDL_Quit();
+	DestroyWindow(MainWindow);
+	MainWindow = nullptr;
+	UnregisterClassW(WindowClassName, instance);
+	timeEndPeriod(1);
 
 	return return_value;
+}
+
+// Time in milliseconds.
+double winmain::Now()
+{
+	if (CounterToMs > 0)
+	{
+		LARGE_INTEGER counter;
+		QueryPerformanceCounter(&counter);
+		return static_cast<double>(counter.QuadPart) * CounterToMs;
+	}
+	return static_cast<double>(timeGetTime());
 }
 
 void winmain::MainLoop()
 {
 	bQuit = false;
 	unsigned updateCounter = 0, frameCounter = 0;
-	auto frameStart = Clock::now();
+	auto frameStart = Now();
 	double UpdateToFrameCounter = 0;
-	DurationMs sleepRemainder(0), frameDuration(TargetFrameTime);
+	double sleepRemainder = 0, frameDuration = TargetFrameTime;
 	auto prevTime = frameStart;
 
 	while (true)
 	{
 		if (DispFrameRate)
 		{
-			auto curTime = Clock::now();
-			if (curTime - prevTime > DurationMs(1000))
+			auto curTime = Now();
+			if (curTime - prevTime > 1000.0)
 			{
 				char buf[60];
-				auto elapsedSec = DurationMs(curTime - prevTime).count() * 0.001;
+				auto elapsedSec = (curTime - prevTime) * 0.001;
 				snprintf(buf, sizeof buf, "Updates/sec = %02.02f Frames/sec = %02.02f ",
 				         updateCounter / elapsedSec, frameCounter / elapsedSec);
-				SDL_SetWindowTitle(MainWindow, buf);
-				FpsDetails = buf;
+				SetWindowTextA(MainWindow, buf);
 				frameCounter = updateCounter = 0;
 				prevTime = curTime;
 			}
@@ -322,113 +323,84 @@ void winmain::MainLoop()
 		if (!ProcessWindowMessages() || bQuit)
 			break;
 
+		// The dialogs are modal: the game waits while they are open.
+		if (RunDialogs())
+		{
+			if (bQuit)
+				break;
+			frameStart = Now();
+			sleepRemainder = 0;
+			frameDuration = TargetFrameTime;
+			no_time_loss = true;
+		}
+
 		if (has_focus)
 		{
 			if (mouse_down)
 			{
-				int x, y, w, h;
-				SDL_GetMouseState(&x, &y);
-				SDL_GetWindowSize(MainWindow, &w, &h);
-				float dx = static_cast<float>(last_mouse_x - x) / static_cast<float>(w);
-				float dy = static_cast<float>(y - last_mouse_y) / static_cast<float>(h);
-				pb::ballset(dx, dy);
-
-				// Original creates continuous mouse movement with mouse capture.
-				// Alternative solution: mouse warp at window edges.
-				int xMod = 0, yMod = 0;
-				if (x == 0 || x >= w - 1)
-					xMod = w - 2;
-				if (y == 0 || y >= h - 1)
-					yMod = h - 2;
-				if (xMod != 0 || yMod != 0)
+				POINT point;
+				RECT client;
+				GetCursorPos(&point);
+				ScreenToClient(MainWindow, &point);
+				GetClientRect(MainWindow, &client);
+				int x = point.x, y = point.y, w = client.right, h = client.bottom;
+				if (w > 2 && h > 2)
 				{
-					// Mouse warp does not work over remote desktop or in some VMs
-					x = abs(x - xMod);
-					y = abs(y - yMod);
-					SDL_WarpMouseInWindow(MainWindow, x, y);
-				}
+					float dx = static_cast<float>(last_mouse_x - x) / static_cast<float>(w);
+					float dy = static_cast<float>(y - last_mouse_y) / static_cast<float>(h);
+					pb::ballset(dx, dy);
 
-				last_mouse_x = x;
-				last_mouse_y = y;
+					// Original creates continuous mouse movement with mouse capture.
+					// Alternative solution: mouse warp at window edges.
+					int xMod = 0, yMod = 0;
+					if (x <= 0 || x >= w - 1)
+						xMod = w - 2;
+					if (y <= 0 || y >= h - 1)
+						yMod = h - 2;
+					if (xMod != 0 || yMod != 0)
+					{
+						x = abs(x - xMod);
+						y = abs(y - yMod);
+						POINT warp{x, y};
+						ClientToScreen(MainWindow, &warp);
+						SetCursorPos(warp.x, warp.y);
+					}
+
+					last_mouse_x = x;
+					last_mouse_y = y;
+				}
 			}
 			if (!single_step && !no_time_loss)
 			{
-				auto dt = static_cast<float>(frameDuration.count());
+				auto dt = static_cast<float>(frameDuration);
 				pb::frame(dt);
-				if (DispGRhistory)
-				{
-					auto targetSize = static_cast<unsigned>(static_cast<float>(Options.UpdatesPerSecond) * gfrWindow);
-					if (gfrDisplay.size() != targetSize)
-					{
-						gfrDisplay.resize(targetSize, static_cast<float>(TargetFrameTime.count()));
-						gfrOffset = 0;
-					}
-					gfrDisplay[gfrOffset] = dt;
-					gfrOffset = (gfrOffset + 1) % gfrDisplay.size();
-				}
 				updateCounter++;
 			}
 			no_time_loss = false;
 
 			if (UpdateToFrameCounter >= UpdateToFrameRatio)
 			{
-				if (Options.HideCursor && CursorIdleCounter <= 0)
-					ImGui::SetMouseCursor(ImGuiMouseCursor_None);
-				ImGui_ImplSDL2_NewFrame();
-				ImGui_Render_NewFrame();
-				ImGui::NewFrame();
-				RenderUi();
-
-				SDL_RenderClear(Renderer);
-				// Alternative clear hack, clear might fail on some systems
-				// Todo: remove original clear, if save for all platforms
-				SDL_RenderFillRect(Renderer, nullptr);
-				render::PresentVScreen();
-
-				ImGui::Render();
-				ImGui_Render_RenderDrawData(ImGui::GetDrawData());
-
-				SDL_RenderPresent(Renderer);
+				auto dc = GetDC(MainWindow);
+				if (dc)
+				{
+					render::PresentVScreen(dc);
+					ReleaseDC(MainWindow, dc);
+				}
 				frameCounter++;
 				UpdateToFrameCounter -= UpdateToFrameRatio;
 			}
 
-			auto sdlError = SDL_GetError();
-			if (sdlError[0] || !PrevSdlError.empty())
-			{
-				if (sdlError[0])
-					SDL_ClearError();
+			auto updateEnd = Now();
+			auto targetTimeDelta = TargetFrameTime - (updateEnd - frameStart) - sleepRemainder;
 
-				// Rate limit duplicate SDL error messages.
-				if (sdlError != PrevSdlError)
-				{
-					PrevSdlError = sdlError;
-					if (PrevSdlErrorCount > 0)
-					{
-						printf("SDL Error: ^ Previous Error Repeated %u Times\n", PrevSdlErrorCount + 1);
-						PrevSdlErrorCount = 0;
-					}
-
-					if (sdlError[0])
-						printf("SDL Error: %s\n", sdlError);
-				}
-				else
-				{
-					PrevSdlErrorCount++;
-				}
-			}
-
-			auto updateEnd = Clock::now();
-			auto targetTimeDelta = TargetFrameTime - DurationMs(updateEnd - frameStart) - sleepRemainder;
-
-			TimePoint frameEnd;
-			if (targetTimeDelta > DurationMs::zero() && !Options.UncappedUpdatesPerSecond)
+			double frameEnd;
+			if (targetTimeDelta > 0 && !Options.UncappedUpdatesPerSecond)
 			{
 				if (Options.HybridSleep)
 					HybridSleep(targetTimeDelta);
 				else
-					std::this_thread::sleep_for(targetTimeDelta);
-				frameEnd = Clock::now();
+					Sleep(static_cast<DWORD>(targetTimeDelta));
+				frameEnd = Now();
 			}
 			else
 			{
@@ -436,483 +408,249 @@ void winmain::MainLoop()
 			}
 
 			// Limit duration to 2 * target time
-			sleepRemainder = Clamp(DurationMs(frameEnd - updateEnd) - targetTimeDelta, -TargetFrameTime,
-			                       TargetFrameTime);
-			frameDuration = std::min<DurationMs>(DurationMs(frameEnd - frameStart), 2 * TargetFrameTime);
+			sleepRemainder = Clamp((frameEnd - updateEnd) - targetTimeDelta, -TargetFrameTime, TargetFrameTime);
+			frameDuration = std::min(frameEnd - frameStart, 2 * TargetFrameTime);
 			frameStart = frameEnd;
 			UpdateToFrameCounter++;
 
-			CursorIdleCounter = std::max(CursorIdleCounter - static_cast<int>(frameDuration.count()), 0);
+			CursorIdleCounter = std::max(CursorIdleCounter - static_cast<int>(frameDuration), 0);
+			if (Options.HideCursor && CursorIdleCounter <= 0 && !CursorHidden)
+			{
+				// Hide the cursor when it is still on the table.
+				POINT point;
+				RECT client;
+				GetCursorPos(&point);
+				if (WindowFromPoint(point) == MainWindow)
+				{
+					ScreenToClient(MainWindow, &point);
+					GetClientRect(MainWindow, &client);
+					if (PtInRect(&client, point))
+					{
+						CursorHidden = true;
+						SetCursor(nullptr);
+					}
+				}
+			}
 		}
-	}
-
-	if (PrevSdlErrorCount > 0)
-	{
-		printf("SDL Error: ^ Previous Error Repeated %u Times\n", PrevSdlErrorCount);
 	}
 }
 
-void winmain::RenderUi()
+int winmain::ProcessWindowMessages()
 {
-	// Transparent menu bar with a button for preventing menu lockout.
-	ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4{});
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4{});
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-	if (!Options.ShowMenu && ImGui::BeginMainMenuBar())
+	static auto idleWait = 0;
+	MSG message;
+	if (!has_focus)
 	{
-		if (ImGui::MenuItem("Menu"))
-		{
-			options::toggle(Menu1::Show_Menu);
-			ImGui::FocusWindow(nullptr);
-		}
-		ImGui::EndMainMenuBar();
-	}
-	ImGui::PopStyleVar(1);
-	ImGui::PopStyleColor(2);
-
-	// No demo window in release to save space
-#ifndef NDEBUG
-	if (ShowImGuiDemo)
-		ImGui::ShowDemoWindow(&ShowImGuiDemo);
-#endif
-
-	if (Options.ShowMenu && ImGui::BeginMainMenuBar())
-	{
-		int currentMenuHeight = static_cast<int>(ImGui::GetWindowSize().y);
-		if (MainMenuHeight != currentMenuHeight)
-		{
-			// Get the height of the main menu bar and update screen coordinates
-			MainMenuHeight = currentMenuHeight;
-			fullscrn::window_size_changed();
-		}
-
-		if (ImGui::BeginMenu(pb::get_rc_string(Msg::Menu1_Game)))
-		{
-			ImGuiMenuItemWShortcut(GameBindings::NewGame);
-			if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_Launch_Ball), nullptr, false, LaunchBallEnabled))
-			{
-				end_pause();
-				pb::launch_ball();
-			}
-			ImGuiMenuItemWShortcut(GameBindings::TogglePause);
-			ImGui::Separator();
-
-			if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_High_Scores), nullptr, false, HighScoresEnabled))
-			{
-				pause(false);
-				pb::high_scores();
-			}
-			if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_Demo), nullptr, DemoActive))
-			{
-				end_pause();
-				pb::toggle_demo();
-			}
-			ImGuiMenuItemWShortcut(GameBindings::Exit);
-			ImGui::EndMenu();
-		}
-
-		if (ImGui::BeginMenu(pb::get_rc_string(Msg::Menu1_Options)))
-		{
-			ImGuiMenuItemWShortcut(GameBindings::ToggleMenuDisplay, Options.ShowMenu);
-			ImGuiMenuItemWShortcut(GameBindings::ToggleFullScreen, Options.FullScreen);
-			if (ImGui::BeginMenu(pb::get_rc_string(Msg::Menu1_Select_Players)))
-			{
-				if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_1Player), nullptr, Options.Players == 1))
-				{
-					options::toggle(Menu1::OnePlayer);
-					new_game();
-				}
-				if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_2Players), nullptr, Options.Players == 2))
-				{
-					options::toggle(Menu1::TwoPlayers);
-					new_game();
-				}
-				if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_3Players), nullptr, Options.Players == 3))
-				{
-					options::toggle(Menu1::ThreePlayers);
-					new_game();
-				}
-				if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_4Players), nullptr, Options.Players == 4))
-				{
-					options::toggle(Menu1::FourPlayers);
-					new_game();
-				}
-				ImGui::EndMenu();
-			}
-			ImGuiMenuItemWShortcut(GameBindings::ShowControlDialog);
-			if (ImGui::BeginMenu("Language"))
-			{
-				auto currentLanguage = translations::GetCurrentLanguage();
-				for (auto& item : translations::Languages)
-				{
-					if (ImGui::MenuItem(item.DisplayName, nullptr, currentLanguage->Language == item.Language))
-					{
-						if (currentLanguage->Language != item.Language)
-						{
-							translations::SetCurrentLanguage(item.ShortName);
-							Restart();
-						}
-					}
-				}
-				ImGui::EndMenu();
-			}
-			ImGui::Separator();
-
-			if (ImGui::BeginMenu("Audio"))
-			{
-				ImGuiMenuItemWShortcut(GameBindings::ToggleSounds, Options.Sounds);
-				if (ImGui::MenuItem("Stereo Sound Effects", nullptr, Options.SoundStereo))
-				{
-					options::toggle(Menu1::SoundStereo);
-				}
-				ImGui::TextUnformatted("Sound Volume");
-				if (ImGui::SliderInt("##Sound Volume", &Options.SoundVolume.V, options::MinVolume, options::MaxVolume,
-				                     "%d",
-				                     ImGuiSliderFlags_AlwaysClamp))
-				{
-					Sound::SetVolume(Options.SoundVolume);
-				}
-				ImGui::TextUnformatted("Sound Channels");
-				if (ImGui::SliderInt("##Sound Channels", &Options.SoundChannels.V, options::MinSoundChannels,
-				                     options::MaxSoundChannels, "%d", ImGuiSliderFlags_AlwaysClamp))
-				{
-					Sound::SetChannels(Options.SoundChannels);
-				}
-				ImGui::Separator();
-
-				ImGuiMenuItemWShortcut(GameBindings::ToggleMusic, Options.Music);
-				ImGui::TextUnformatted("Music Volume");
-				if (ImGui::SliderInt("##Music Volume", &Options.MusicVolume.V, options::MinVolume, options::MaxVolume,
-				                     "%d",
-				                     ImGuiSliderFlags_AlwaysClamp))
-				{
-					midi::SetVolume(Options.MusicVolume);
-				}
-				ImGui::EndMenu();
-			}
-
-			if (ImGui::BeginMenu("Graphics"))
-			{
-				if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_WindowUniformScale), nullptr, Options.UniformScaling))
-				{
-					options::toggle(Menu1::WindowUniformScale);
-				}
-				if (ImGui::MenuItem("Linear Filtering", nullptr, Options.LinearFiltering))
-				{
-					options::toggle(Menu1::WindowLinearFilter);
-				}
-				if (ImGui::MenuItem("Integer Scaling", nullptr, Options.IntegerScaling))
-				{
-					options::toggle(Menu1::WindowIntegerScale);
-				}
-				if (ImGui::DragFloat("UI Scale", &Options.UIScale.V, 0.005f, 0.8f, 5,
-				                     "%.2f", ImGuiSliderFlags_AlwaysClamp))
-				{
-					ImIO->FontGlobalScale = Options.UIScale;
-				}
-				ImGui::Separator();
-
-				char buffer[80]{};
-				auto changed = false;
-				if (ImGui::MenuItem("Set Default UPS/FPS"))
-				{
-					changed = true;
-					Options.UpdatesPerSecond = options::DefUps;
-					Options.FramesPerSecond = options::DefFps;
-				}
-				if (ImGui::SliderInt("UPS", &Options.UpdatesPerSecond.V, options::MinUps, options::MaxUps, "%d",
-				                     ImGuiSliderFlags_AlwaysClamp))
-				{
-					changed = true;
-					Options.FramesPerSecond = std::min(Options.UpdatesPerSecond.V, Options.FramesPerSecond.V);
-				}
-				if (ImGui::SliderInt("FPS", &Options.FramesPerSecond.V, options::MinFps, options::MaxFps, "%d",
-				                     ImGuiSliderFlags_AlwaysClamp))
-				{
-					changed = true;
-					Options.UpdatesPerSecond = std::max(Options.UpdatesPerSecond.V, Options.FramesPerSecond.V);
-				}
-				snprintf(buffer, sizeof buffer - 1, "Uncapped UPS (FPS ratio %02.02f)", UpdateToFrameRatio);
-				if (ImGui::MenuItem(buffer, nullptr, Options.UncappedUpdatesPerSecond))
-				{
-					Options.UncappedUpdatesPerSecond ^= true;
-				}
-				if (ImGui::MenuItem("Precise Sleep", nullptr, Options.HybridSleep))
-				{
-					Options.HybridSleep ^= true;
-					SleepState = WelfordState{};
-					SpinThreshold = DurationMs::zero();
-				}
-
-				if (changed)
-				{
-					UpdateFrameRate();
-				}
-				ImGui::Separator();
-
-				if (ImGui::MenuItem("Hide Cursor", nullptr, Options.HideCursor))
-				{
-					Options.HideCursor ^= true;
-				}
-				if (ImGui::MenuItem("Change Font..."))
-				{
-					font_selection::ShowDialog();
-				}
-
-				ImGui::EndMenu();
-			}
-
-			if (ImGui::BeginMenu(pb::get_rc_string(Msg::Menu1_Table_Resolution)))
-			{
-				char buffer[20]{};
-				auto resolutionStringId = Msg::Menu1_UseMaxResolution_640x480;
-
-				switch (fullscrn::GetMaxResolution())
-				{
-				case 0: resolutionStringId = Msg::Menu1_UseMaxResolution_640x480;
-					break;
-				case 1: resolutionStringId = Msg::Menu1_UseMaxResolution_800x600;
-					break;
-				case 2: resolutionStringId = Msg::Menu1_UseMaxResolution_1024x768;
-					break;
-				}
-
-				auto maxResText = pb::get_rc_string(resolutionStringId);
-				if (ImGui::MenuItem(maxResText, nullptr, Options.Resolution == -1))
-				{
-					options::toggle(Menu1::MaximumResolution);
-				}
-				for (auto i = 0; i <= fullscrn::GetMaxResolution(); i++)
-				{
-					auto& res = fullscrn::resolution_array[i];
-					snprintf(buffer, sizeof buffer - 1, "%d x %d", res.ScreenWidth, res.ScreenHeight);
-					if (ImGui::MenuItem(buffer, nullptr, Options.Resolution == i))
-					{
-						options::toggle(static_cast<Menu1>(static_cast<int>(Menu1::R640x480) + i));
-					}
-				}
-				ImGui::EndMenu();
-			}
-
-			if (ImGui::BeginMenu("Game Data"))
-			{
-				if (ImGui::MenuItem("Prefer 3DPB Data", nullptr, Options.Prefer3DPBGameData))
-				{
-					options::toggle(Menu1::Prefer3DPBGameData);
-				}
-				ImGui::EndMenu();
-			}
-			ImGui::Separator();
-			if (ImGui::MenuItem("Reset All Options"))
-			{
-				options::ResetAllOptions();
-				Restart();
-			}
-			ImGui::EndMenu();
-		}
-
-		if (ImGui::BeginMenu(pb::get_rc_string(Msg::Menu1_Help)))
-		{
-#ifndef NDEBUG
-			if (ImGui::MenuItem("ImGui Demo", nullptr, ShowImGuiDemo))
-			{
-				ShowImGuiDemo ^= true;
-			}
-#endif
-			if (ImGui::MenuItem("Sprite Viewer", nullptr, ShowSpriteViewer))
-			{
-				if (!ShowSpriteViewer)
-					pause(false);
-				ShowSpriteViewer ^= true;
-			}
-			if (pb::cheat_mode && ImGui::MenuItem("Frame Times", nullptr, DispGRhistory))
-			{
-				DispGRhistory ^= true;
-			}
-			if (ImGui::MenuItem("Debug Overlay", nullptr, Options.DebugOverlay))
-			{
-				Options.DebugOverlay ^= true;
-			}
-			if (Options.DebugOverlay && ImGui::BeginMenu("Overlay Options"))
-			{
-				if (ImGui::MenuItem("Box Grid", nullptr, Options.DebugOverlayGrid))
-					Options.DebugOverlayGrid ^= true;
-				if (ImGui::MenuItem("Ball Depth Grid", nullptr, Options.DebugOverlayBallDepthGrid))
-					Options.DebugOverlayBallDepthGrid ^= true;
-				if (ImGui::MenuItem("Sprite Positions", nullptr, Options.DebugOverlaySprites))
-					Options.DebugOverlaySprites ^= true;
-				if (ImGui::MenuItem("All Edges", nullptr, Options.DebugOverlayAllEdges))
-					Options.DebugOverlayAllEdges ^= true;
-				if (ImGui::MenuItem("Component AABB", nullptr, Options.DebugOverlayAabb))
-					Options.DebugOverlayAabb ^= true;
-				if (ImGui::MenuItem("Ball Position", nullptr, Options.DebugOverlayBallPosition))
-					Options.DebugOverlayBallPosition ^= true;
-				if (ImGui::MenuItem("Ball Box Edges", nullptr, Options.DebugOverlayBallEdges))
-					Options.DebugOverlayBallEdges ^= true;
-				if (ImGui::MenuItem("Sound Positions", nullptr, Options.DebugOverlaySounds))
-					Options.DebugOverlaySounds ^= true;
-				if (ImGui::MenuItem("Apply Collision Mask", nullptr, Options.DebugOverlayCollisionMask))
-					Options.DebugOverlayCollisionMask ^= true;
-				ImGui::EndMenu();
-			}
-			if (ImGui::BeginMenu("Cheats"))
-			{
-				if (ImGui::MenuItem("hidden test", nullptr, pb::cheat_mode))
-					pb::PushCheat("hidden test");
-				if (ImGui::MenuItem("1max"))
-					pb::PushCheat("1max");
-				if (ImGui::MenuItem("bmax", nullptr, control::table_unlimited_balls))
-					pb::PushCheat("bmax");
-				if (ImGui::MenuItem("gmax"))
-					pb::PushCheat("gmax");
-				if (ImGui::MenuItem("rmax"))
-					pb::PushCheat("rmax");
-				if (pb::FullTiltMode && ImGui::MenuItem("quote"))
-					pb::PushCheat("quote");
-				if (ImGui::MenuItem("easy mode", nullptr, control::easyMode))
-					pb::PushCheat("easy mode");
-
-				ImGui::EndMenu();
-			}
-			ImGui::Separator();
-
-			if (ImGui::MenuItem(pb::get_rc_string(Msg::Menu1_About_Pinball)))
-			{
-				pause(false);
-				ShowAboutDialog = true;
-			}
-			ImGui::EndMenu();
-		}
-		if (DispFrameRate && !FpsDetails.empty())
-			if (ImGui::BeginMenu(FpsDetails.c_str()))
-				ImGui::EndMenu();
-		ImGui::EndMainMenuBar();
+		// Progressively wait longer when transitioning to idle
+		idleWait = std::min(idleWait + static_cast<int>(TargetFrameTime), 500);
+		if (MsgWaitForMultipleObjects(0, nullptr, FALSE, idleWait, QS_ALLINPUT) != WAIT_OBJECT_0)
+			return 1;
 	}
 
-	a_dialog();
-	high_score::RenderHighScoreDialog();
-	font_selection::RenderDialog();
-	if (ShowSpriteViewer)
-		render::SpriteViewer(&ShowSpriteViewer);
-	options::RenderControlDialog();
-	if (DispGRhistory)
-		RenderFrameTimeDialog();
+	idleWait = static_cast<int>(TargetFrameTime);
+	while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+	{
+		if (message.message == WM_QUIT)
+			return 0;
+		TranslateMessage(&message);
+		DispatchMessageW(&message);
+	}
+	return 1;
+}
 
-	const auto exitText = translations::GetTranslation(Msg::Menu1_Exit);
+// Shows the dialogs that the game asked for. Returns true when a dialog was shown.
+bool winmain::RunDialogs()
+{
+	auto shown = false;
+	if (ShowAboutDialog)
+	{
+		ShowAboutDialog = false;
+		a_dialog();
+		shown = true;
+	}
+
+	if (high_score::RenderHighScoreDialog())
+		shown = true;
+	if (options::RenderControlDialog())
+		shown = true;
+
 	if (ShowExitPopup)
 	{
 		ShowExitPopup = false;
 		pause(false);
-		ImGui::OpenPopup(exitText);
-		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-	}
-	if (ImGui::BeginPopupModal(exitText, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-	{
-		ImGui::Text("Exit the game?");
-		ImGui::Separator();
-
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericOk), ImVec2(120, 0)))
-		{
-			SDL_Event event{SDL_QUIT};
-			SDL_PushEvent(&event);
-			ImGui::CloseCurrentPopup();
-		}
-		ImGui::SameLine();
-		if (ImGui::IsWindowAppearing())
-		{
-			ImGui::SetKeyboardFocusHere(0);
-		}
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericCancel), ImVec2(120, 0)))
-		{
+		auto answer = MessageBoxW(MainWindow, L"Exit the game?",
+		                          wintext::ToWide(translations::GetTranslation(Msg::Menu1_Exit)).data(),
+		                          MB_OKCANCEL | MB_ICONQUESTION);
+		if (answer == IDOK)
+			RequestQuit();
+		else
 			end_pause();
-			ImGui::CloseCurrentPopup();
-		}
-		ImGui::SetItemDefaultFocus();
-		ImGui::EndPopup();
+		shown = true;
 	}
-
-	// Print game texts on the sidebar
-	gdrv::grtext_draw_ttext_in_box();
+	return shown;
 }
 
-int winmain::event_handler(const SDL_Event* event)
+LRESULT CALLBACK winmain::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
-	auto inputDown = false;
-	switch (event->type)
+	switch (message)
 	{
-	case SDL_KEYDOWN:
-	case SDL_MOUSEBUTTONDOWN:
-	case SDL_CONTROLLERBUTTONDOWN:
-		inputDown = true;
+	case WM_CLOSE:
+		RequestQuit();
+		return 0;
+	case WM_ACTIVATEAPP:
+		// Not WM_ACTIVATE: the dialogs of the game do not take the focus from the game.
+		if (!wParam)
+			FocusLost();
+		else if (!IsIconic(window))
+			FocusGained();
+		return 0;
+	case WM_SIZE:
+		if (wParam == SIZE_MINIMIZED)
+		{
+			FocusLost();
+		}
+		else
+		{
+			// Restored from the task bar: the activation came while the window was an icon.
+			auto foreground = GetForegroundWindow();
+			if (!has_focus && foreground && GetWindowThreadProcessId(foreground, nullptr) == GetCurrentThreadId())
+				FocusGained();
+			fullscrn::window_size_changed();
+		}
+		return 0;
+	case WM_PAINT:
+		{
+			PAINTSTRUCT paint;
+			auto dc = BeginPaint(window, &paint);
+			if (dc)
+				render::PaintWindow(dc);
+			EndPaint(window, &paint);
+			return 0;
+		}
+	case WM_ERASEBKGND:
+		return 1;
+	case WM_KEYDOWN:
+	case WM_SYSKEYDOWN:
+	case WM_KEYUP:
+	case WM_SYSKEYUP:
+		if (OnKey(message, wParam, lParam))
+			return 0;
 		break;
-	default: break;
-	}
-	if (!options::WaitingForInput() || !inputDown)
-		ImGui_ImplSDL2_ProcessEvent(event);
-
-	bool mouseEvent;
-	switch (event->type)
-	{
-	case SDL_MOUSEMOTION:
-	case SDL_MOUSEBUTTONDOWN:
-	case SDL_MOUSEBUTTONUP:
-	case SDL_MOUSEWHEEL:
-		CursorIdleCounter = 1000;
-		mouseEvent = true;
+	case WM_SYSCHAR:
+		// The menu has no access keys: only Alt+Space (the system menu) is for
+		// Windows. The other Alt keys must not beep.
+		if (wParam != ' ')
+			return 0;
 		break;
-	default:
-		mouseEvent = false;
+	case WM_LBUTTONDOWN:
+	case WM_MBUTTONDOWN:
+	case WM_RBUTTONDOWN:
+	case WM_LBUTTONUP:
+	case WM_MBUTTONUP:
+	case WM_RBUTTONUP:
+		OnMouseButton(message, wParam, lParam);
+		return 0;
+	case WM_MOUSEMOVE:
+		{
+			POINT point{MouseX(lParam), MouseY(lParam)};
+			if (point.x != LastCursorPos.x || point.y != LastCursorPos.y)
+			{
+				LastCursorPos = point;
+				CursorIdleCounter = 1000;
+				if (CursorHidden)
+				{
+					CursorHidden = false;
+					SetCursor(LoadCursorA(nullptr, IDC_ARROW));
+				}
+			}
+			return 0;
+		}
+	case WM_SETCURSOR:
+		if (LOWORD(lParam) == HTCLIENT && CursorHidden)
+		{
+			SetCursor(nullptr);
+			return TRUE;
+		}
 		break;
-	}
-
-	if (ImIO->WantCaptureMouse && !options::WaitingForInput())
-	{
-		if (mouse_down)
+	case WM_CAPTURECHANGED:
+		if (mouse_down && reinterpret_cast<HWND>(lParam) != window)
 		{
 			mouse_down = 0;
-			SDL_SetWindowGrab(MainWindow, SDL_FALSE);
+			ClipCursor(nullptr);
 		}
-		if (mouseEvent)
-			return 1;
-	}
-	if (ImIO->WantCaptureKeyboard && !options::WaitingForInput())
-	{
-		switch (event->type)
-		{
-		case SDL_KEYDOWN:
-		case SDL_KEYUP:
-		case SDL_CONTROLLERBUTTONDOWN:
-		case SDL_CONTROLLERBUTTONUP:
-			return 1;
-		default: ;
-		}
-	}
-
-	switch (event->type)
-	{
-	case SDL_QUIT:
-		end_pause();
-		bQuit = true;
-		fullscrn::shutdown();
-		return_value = 0;
 		return 0;
-	case SDL_KEYUP:
-		pb::InputUp({InputTypes::Keyboard, event->key.keysym.sym});
-		break;
-	case SDL_KEYDOWN:
-		if (event->key.repeat)
-			break;
-
-		pb::InputDown({InputTypes::Keyboard, event->key.keysym.sym});
-		if (!pb::cheat_mode)
-			break;
-
-		switch (event->key.keysym.sym)
+	case WM_COMMAND:
+		// Menu items: the high word is 0.
+		if (HIWORD(wParam) == 0)
+			OnMenuCommand(LOWORD(wParam));
+		return 0;
+	case WM_SYSCOMMAND:
+		switch (wParam & 0xFFF0)
 		{
-		case SDLK_g:
-			DispGRhistory ^= true;
+		case SystemShowMenuId:
+			options::toggle(Menu1::Show_Menu);
+			return 0;
+		case SC_SCREENSAVE:
+#ifdef SC_MONITORPOWER
+		case SC_MONITORPOWER:
+#endif
+			// No screen saver while the game runs.
+			if (has_focus && !single_step)
+				return 0;
 			break;
-		case SDLK_o:
+		default:
+			break;
+		}
+		break;
+	case WM_INITMENU:
+		InitMenuStates(reinterpret_cast<HMENU>(wParam));
+		return 0;
+	case WM_ENTERMENULOOP:
+	case WM_EXITMENULOOP:
+	case WM_ENTERSIZEMOVE:
+	case WM_EXITSIZEMOVE:
+		// The game stops in the menu and while the window moves.
+		no_time_loss = true;
+		return 0;
+	case MM_MCINOTIFY:
+		midi::OnMciNotify(wParam, lParam);
+		return 0;
+	default:
+		break;
+	}
+	return DefWindowProcW(window, message, wParam, lParam);
+}
+
+// Keyboard input. The input values are virtual-key codes. Returns false when
+// Windows must see the key too: Alt+F4, Alt+Space, and Alt or F10 for the menu.
+bool winmain::OnKey(UINT message, WPARAM wParam, LPARAM lParam)
+{
+	auto virtualKey = static_cast<int>(wParam);
+	auto isSystemKey = message == WM_SYSKEYDOWN || message == WM_SYSKEYUP;
+	auto altDown = (lParam & (1 << 29)) != 0;
+	if (isSystemKey && altDown && (virtualKey == VK_F4 || virtualKey == VK_SPACE))
+		return false;
+
+	GameInput input{InputTypes::Keyboard, virtualKey};
+	auto forGame = !isSystemKey || !options::MapGameInput(input).empty() ||
+		(pb::cheat_mode && virtualKey == VK_F10);
+
+	if (message == WM_KEYUP || message == WM_SYSKEYUP)
+	{
+		pb::InputUp(input);
+		return forGame;
+	}
+
+	// Bit 30: the key was down before (auto-repeat).
+	if (lParam & (1 << 30))
+		return forGame;
+
+	pb::InputDown(input);
+	if (pb::cheat_mode)
+	{
+		switch (virtualKey)
+		{
+		case 'O':
 			{
 				auto plt = new ColorRgba[4 * 256];
 				auto pltPtr = &plt[10]; // first 10 entries are system colors hardcoded in display_palette()
@@ -931,14 +669,14 @@ int winmain::event_handler(const SDL_Event* event)
 				delete[] plt;
 			}
 			break;
-		case SDLK_y:
-			SDL_SetWindowTitle(MainWindow, "Pinball");
+		case 'Y':
+			wintext::SetText(MainWindow, pb::get_rc_string(Msg::STRING139));
 			DispFrameRate ^= true;
 			break;
-		case SDLK_F1:
+		case VK_F1:
 			pb::frame(10);
 			break;
-		case SDLK_F10:
+		case VK_F10:
 			single_step ^= true;
 			if (!single_step)
 				no_time_loss = true;
@@ -946,132 +684,109 @@ int winmain::event_handler(const SDL_Event* event)
 		default:
 			break;
 		}
-		break;
-	case SDL_MOUSEBUTTONDOWN:
-		{
-			bool noInput = false;
-			switch (event->button.button)
-			{
-			case SDL_BUTTON_LEFT:
-				if (pb::cheat_mode)
-				{
-					mouse_down = 1;
-					last_mouse_x = event->button.x;
-					last_mouse_y = event->button.y;
-					SDL_SetWindowGrab(MainWindow, SDL_TRUE);
-					noInput = true;
-				}
-				break;
-			default:
-				break;
-			}
-
-			if (!noInput)
-				pb::InputDown({InputTypes::Mouse, event->button.button});
-		}
-		break;
-	case SDL_MOUSEBUTTONUP:
-		{
-			bool noInput = false;
-			switch (event->button.button)
-			{
-			case SDL_BUTTON_LEFT:
-				if (mouse_down)
-				{
-					mouse_down = 0;
-					SDL_SetWindowGrab(MainWindow, SDL_FALSE);
-					noInput = true;
-				}
-				break;
-			default:
-				break;
-			}
-
-			if (!noInput)
-				pb::InputUp({InputTypes::Mouse, event->button.button});
-		}
-		break;
-	case SDL_WINDOWEVENT:
-		switch (event->window.event)
-		{
-		case SDL_WINDOWEVENT_FOCUS_GAINED:
-		case SDL_WINDOWEVENT_TAKE_FOCUS:
-		case SDL_WINDOWEVENT_SHOWN:
-			activated = true;
-			Sound::Activate();
-			if (Options.Music && !single_step)
-				midi::music_play();
-			no_time_loss = true;
-			has_focus = true;
-			break;
-		case SDL_WINDOWEVENT_FOCUS_LOST:
-		case SDL_WINDOWEVENT_HIDDEN:
-			activated = false;
-			fullscrn::activate(0);
-			Options.FullScreen = false;
-			Sound::Deactivate();
-			midi::music_stop();
-			has_focus = false;
-			pb::loose_focus();
-			break;
-		case SDL_WINDOWEVENT_SIZE_CHANGED:
-		case SDL_WINDOWEVENT_RESIZED:
-			fullscrn::window_size_changed();
-			break;
-		default: ;
-		}
-		break;
-	case SDL_JOYDEVICEADDED:
-		if (SDL_IsGameController(event->jdevice.which))
-		{
-			SDL_GameControllerOpen(event->jdevice.which);
-		}
-		break;
-	case SDL_JOYDEVICEREMOVED:
-		{
-			SDL_GameController* controller = SDL_GameControllerFromInstanceID(event->jdevice.which);
-			if (controller)
-			{
-				SDL_GameControllerClose(controller);
-			}
-		}
-		break;
-	case SDL_CONTROLLERBUTTONDOWN:
-		pb::InputDown({InputTypes::GameController, event->cbutton.button});
-		break;
-	case SDL_CONTROLLERBUTTONUP:
-		pb::InputUp({InputTypes::GameController, event->cbutton.button});
-		break;
-	default: ;
 	}
-
-	return 1;
+	return forGame;
 }
 
-int winmain::ProcessWindowMessages()
+void winmain::OnMouseButton(UINT message, WPARAM wParam, LPARAM lParam)
 {
-	static auto idleWait = 0;
-	SDL_Event event;
-	if (has_focus)
+	CursorIdleCounter = 1000;
+
+	int button;
+	switch (message)
 	{
-		idleWait = static_cast<int>(TargetFrameTime.count());
-		while (SDL_PollEvent(&event))
+	case WM_LBUTTONDOWN:
+	case WM_LBUTTONUP:
+		button = MouseButtonLeft;
+		break;
+	case WM_MBUTTONDOWN:
+	case WM_MBUTTONUP:
+		button = MouseButtonMiddle;
+		break;
+	default:
+		button = MouseButtonRight;
+		break;
+	}
+
+	if (message == WM_LBUTTONDOWN || message == WM_MBUTTONDOWN || message == WM_RBUTTONDOWN)
+	{
+		// The button up comes also when the cursor is out of the window.
+		SetCapture(MainWindow);
+		if (button == MouseButtonLeft && pb::cheat_mode)
 		{
-			if (!event_handler(&event))
-				return 0;
+			// Move the ball with the mouse; the cursor stays in the window.
+			mouse_down = 1;
+			last_mouse_x = MouseX(lParam);
+			last_mouse_y = MouseY(lParam);
+			RECT rect;
+			GetClientRect(MainWindow, &rect);
+			MapWindowPoints(MainWindow, nullptr, reinterpret_cast<POINT*>(&rect), 2);
+			ClipCursor(&rect);
+			return;
 		}
-
-		return 1;
+		pb::InputDown({InputTypes::Mouse, button});
+		return;
 	}
 
-	// Progressively wait longer when transitioning to idle
-	idleWait = std::min(idleWait + static_cast<int>(TargetFrameTime.count()), 500);
-	if (SDL_WaitEventTimeout(&event, idleWait))
+	auto noInput = false;
+	if (button == MouseButtonLeft && mouse_down)
 	{
-		idleWait = static_cast<int>(TargetFrameTime.count());
-		return event_handler(&event);
+		mouse_down = 0;
+		ClipCursor(nullptr);
+		noInput = true;
 	}
-	return 1;
+	if (!noInput)
+		pb::InputUp({InputTypes::Mouse, button});
+	if (!(wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON)) && GetCapture() == MainWindow)
+		ReleaseCapture();
+}
+
+void winmain::FocusGained()
+{
+	if (has_focus)
+		return;
+
+	activated = true;
+	Sound::Activate();
+	if (Options.Music && !single_step)
+		midi::music_play();
+	no_time_loss = true;
+	has_focus = true;
+}
+
+void winmain::FocusLost()
+{
+	if (!has_focus)
+		return;
+
+	activated = false;
+	fullscrn::activate(0);
+	Options.FullScreen = false;
+	Sound::Deactivate();
+	midi::music_stop();
+	has_focus = false;
+	pb::loose_focus();
+
+	if (mouse_down)
+	{
+		mouse_down = 0;
+		ClipCursor(nullptr);
+	}
+	if (GetCapture() == MainWindow)
+		ReleaseCapture();
+}
+
+void winmain::RequestQuit()
+{
+	end_pause();
+	bQuit = true;
+	fullscrn::shutdown();
+	return_value = 0;
+}
+
+int __cdecl winmain::NewHandler(size_t)
+{
+	memalloc_failure();
 }
 
 void winmain::memalloc_failure()
@@ -1080,187 +795,21 @@ void winmain::memalloc_failure()
 	Sound::Close();
 	const char* caption = pb::get_rc_string(Msg::STRING270);
 	const char* text = pb::get_rc_string(Msg::STRING279);
-	pb::ShowMessageBox(SDL_MESSAGEBOX_ERROR, caption, text);
+	pb::ShowMessageBox(MB_ICONHAND, caption, text);
 	std::exit(1);
 }
 
 void winmain::a_dialog()
 {
-	if (ShowAboutDialog == true)
-	{
-		ShowAboutDialog = false;
-		ImGui::OpenPopup(pb::get_rc_string(Msg::STRING204));
-	}
-
-	bool unused_open = true;
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2{ 600, 300 });
-	if (ImGui::BeginPopupModal(pb::get_rc_string(Msg::STRING204), &unused_open, ImGuiWindowFlags_None))
-	{
-		if (ImGui::BeginTabBar("AboutTabBar", ImGuiTabBarFlags_None))
-		{
-			if (ImGui::BeginTabItem("3DPB"))
-			{
-				ImGui::TextUnformatted(pb::get_rc_string(Msg::STRING139));
-				ImGui::TextUnformatted("Original game by Cinematronics, Microsoft");
-				ImGui::Separator();
-
-				ImGui::TextUnformatted("Decompiled -> Ported to SDL");
-				ImGui::Text("Version %s", Version);
-				if (ImGui::SmallButton("Project home: https://github.com/k4zmu2a/SpaceCadetPinball"))
-				{
-#if SDL_VERSION_ATLEAST(2, 0, 14)
-					// Relatively new feature, skip with older SDL
-					SDL_OpenURL("https://github.com/k4zmu2a/SpaceCadetPinball");
-#endif
-				}
-				ImGui::EndTabItem();
-			}
-			ImGui::PushStyleColor(ImGuiCol_Button, 0);
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, 0);
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive, 0);
-			if (ImGui::BeginTabItem("Full Tilt!"))
-			{
-				const ImVec2 buttonCenter = { -1, 0 };
-				ImGui::Button("Full Tilt! was created by Cinematronics for Maxis.", buttonCenter);
-				ImGui::Button("Version 1.1", buttonCenter);
-
-				auto tableRow = [](LPCSTR textA, LPCSTR textB)
-				{
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::TextUnformatted(textA);
-					ImGui::TableNextColumn();
-					ImGui::TextUnformatted(textB);
-				};
-				if (ImGui::BeginTable("Full Tilt!", 2))
-				{
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Button("Cinematronics", buttonCenter);
-					ImGui::Separator();
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("PROGRAMMING", "ART");
-						tableRow("Michael Sandige", "John Frantz");
-						tableRow("John Taylor", "Ryan Medeiros");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("DESIGN", "SOUND EFFECTS");
-						tableRow("Kevin Gliner", "Matt Ridgeway");
-						tableRow(nullptr, "Donald S. Griffin");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("DESIGN CONSULTANT", "MUSIC");
-						tableRow("Mark Sprenger", "Matt Ridgeway");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("PRODUCER", "VOICES");
-						tableRow("Kevin Gliner", "Mike McGeary");
-						tableRow(nullptr, "William Rice");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("GRAND POOBAH", nullptr);
-						tableRow("David Stafford", nullptr);
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					ImGui::Button("SPECIAL THANKS", buttonCenter);
-					if (ImGui::BeginTable("Cinematronics", 2))
-					{
-						tableRow("Paula Sandige", "Alex St. John");
-						tableRow("Brad Silverberg", "Jeff Camp");
-						tableRow("Danny Thorpe", "Greg Hospelhorn");
-						tableRow("Keith Johnson", "Sean Grant");
-						tableRow("Bob McAnn", "Michael Kelley");
-						tableRow("Rob Rosenhouse", "Lisa Acton");
-						ImGui::EndTable();
-					}
-					ImGui::TextUnformatted("Dan and Mitchell Roth");
-
-					ImGui::TableNextColumn();
-					ImGui::Button("Maxis", buttonCenter);
-					ImGui::Separator();
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("PRODUCER", "PRODUCT MANAGER");
-						tableRow("John Csicsery", "Larry Lee");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("LEAD TESTER", "QA MANAGER");
-						tableRow("Scott Shicoff", "Scott Shicoff");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					ImGui::Button("ADDITIONAL TESTING", buttonCenter);
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("Cathy Castro", "Robin Hines");
-						tableRow("John \"Jussi\" Ylinen", "Keith Meyer");
-						tableRow("Marc Meyer", "Owen Nelson");
-						tableRow("Joe Longworth", "Peter Saylor");
-						tableRow("Michael Gilmartin", "Robin Hines");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("ADDITIONAL ART", "ART DIRECTOR");
-						tableRow("Ocean Quigley", "Sharon Barr");
-						tableRow("Rick Macaraeg", "INSTALL PROGRAM");
-						tableRow("Charlie Aquilina", "Kevin O'Hare");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("INTRO MUSIC", "DOCUMENTATION");
-						tableRow("Brian Conrad", "David Caggiano");
-						tableRow("John Csicsery", "Michael Bremer");
-						tableRow(nullptr, "Bob Sombrio");
-						ImGui::EndTable();
-					}
-					ImGui::Separator();
-					ImGui::Button("SPECIAL THANKS", buttonCenter);
-					if (ImGui::BeginTable("Maxis", 2))
-					{
-						tableRow("Sam Poole", "Joe Scirica");
-						tableRow("Jeff Braun", "Bob Derber");
-						tableRow("Ashley Csicsery", "Tom Forge");
-						ImGui::EndTable();
-					}
-					ImGui::Button("Will \"Burr\" Wright", buttonCenter);
-					ImGui::EndTable();
-				}
-
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
-			ImGui::PopStyleColor(3);
-		}
-
-		ImGui::Separator();
-		if (ImGui::Button("Ok"))
-		{
-			ImGui::CloseCurrentPopup();
-		}
-		ImGui::EndPopup();
-	}
-	ImGui::PopStyleVar();
+	std::string text = pb::get_rc_string(Msg::STRING139);
+	text += "\nOriginal game by Cinematronics, Microsoft\n\n";
+	text += "Decompiled -> Ported to SDL -> Ported to Win32 for PINT\n";
+	text += "Version ";
+	text += Version;
+	text += "\nBased on: https://github.com/k4zmu2a/SpaceCadetPinball\n\n";
+	text += "Full Tilt! was created by Cinematronics for Maxis.";
+	MessageBoxW(MainWindow, wintext::ToWide(text).data(), wintext::ToWide(pb::get_rc_string(Msg::STRING204)).data(),
+	            MB_OK | MB_ICONINFORMATION);
 }
 
 void winmain::end_pause()
@@ -1290,8 +839,7 @@ void winmain::pause(bool toggle)
 void winmain::Restart()
 {
 	restart = true;
-	SDL_Event event{SDL_QUIT};
-	SDL_PushEvent(&event);
+	RequestQuit();
 }
 
 void winmain::UpdateFrameRate()
@@ -1299,7 +847,7 @@ void winmain::UpdateFrameRate()
 	// UPS >= FPS
 	auto fps = Options.FramesPerSecond.V, ups = Options.UpdatesPerSecond.V;
 	UpdateToFrameRatio = static_cast<double>(ups) / fps;
-	TargetFrameTime = DurationMs(1000.0 / ups);
+	TargetFrameTime = 1000.0 / ups;
 }
 
 void winmain::HandleGameBinding(GameBindings binding, bool shortcut)
@@ -1330,10 +878,7 @@ void winmain::HandleGameBinding(GameBindings binding, bool shortcut)
 		break;
 	case GameBindings::Exit:
 		if (!shortcut)
-		{
-			SDL_Event event{SDL_QUIT};
-			SDL_PushEvent(&event);
-		}
+			RequestQuit();
 		else
 			ShowExitPopup = true;
 		break;
@@ -1342,46 +887,7 @@ void winmain::HandleGameBinding(GameBindings binding, bool shortcut)
 	}
 }
 
-void winmain::RenderFrameTimeDialog()
-{
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2{300, 70});
-	if (ImGui::Begin("Frame Times", &DispGRhistory, ImGuiWindowFlags_NoScrollbar))
-	{
-		auto target = static_cast<float>(TargetFrameTime.count());
-		auto yMax = target * 2;
-
-		auto spin = Options.HybridSleep ? static_cast<float>(SpinThreshold.count()) : 0;
-		ImGui::Text("YMin:0ms, Target frame time:%03.04fms, YMax:%03.04fms, SpinThreshold:%03.04fms",
-		            target, yMax, spin);
-
-		static bool scrollPlot = true;
-		ImGui::Checkbox("Scroll Plot", &scrollPlot);
-
-		ImGui::SameLine();
-		ImGui::SliderFloat("Window Size", &gfrWindow, 0.1f, 15, "%.3fsec", ImGuiSliderFlags_AlwaysClamp);
-
-		{
-			float average = 0.0f, dev = 0.0f;
-			for (auto n : gfrDisplay)
-			{
-				average += n;
-				dev += std::abs(target - n);
-			}
-			average /= static_cast<float>(gfrDisplay.size());
-			dev /= static_cast<float>(gfrDisplay.size());
-			char overlay[64];
-			sprintf(overlay, "avg %.3fms, dev %.3fms", average, dev);
-
-			auto region = ImGui::GetContentRegionAvail();
-			ImGui::PlotLines("Lines", gfrDisplay.data(), static_cast<int>(gfrDisplay.size()),
-			                 scrollPlot ? gfrOffset : 0, overlay, 0, yMax, region);
-		}
-	}
-	ImGui::End();
-	ImGui::PopStyleVar();
-}
-
-void winmain::HybridSleep(DurationMs sleepTarget)
+void winmain::HybridSleep(double sleepTarget)
 {
 	static constexpr double StdDevFactor = 0.5;
 
@@ -1389,28 +895,409 @@ void winmain::HybridSleep(DurationMs sleepTarget)
 	// Sacrifices some CPU time for smaller frame time jitter
 	while (sleepTarget > SpinThreshold)
 	{
-		auto start = Clock::now();
-		std::this_thread::sleep_for(DurationMs(1));
-		auto end = Clock::now();
+		auto start = Now();
+		Sleep(1);
+		auto end = Now();
 
-		auto actualDuration = DurationMs(end - start);
+		auto actualDuration = end - start;
 		sleepTarget -= actualDuration;
 
 		// Update expected sleep duration using Welford's online algorithm
 		// With bad timer, this will run away to 100% spin
-		SleepState.Advance(actualDuration.count());
-		SpinThreshold = DurationMs(SleepState.mean + SleepState.GetStdDev() * StdDevFactor);
+		SleepState.Advance(actualDuration);
+		SpinThreshold = SleepState.mean + SleepState.GetStdDev() * StdDevFactor;
 	}
 
 	// spin lock
-	for (auto start = Clock::now(); DurationMs(Clock::now() - start) < sleepTarget;);
+	for (auto start = Now(); Now() - start < sleepTarget;);
 }
 
-void winmain::ImGuiMenuItemWShortcut(GameBindings binding, bool selected)
+// A menu item of a game binding, with its first key as the shortcut text.
+void winmain::AppendBindingItem(HMENU menu, GameBindings binding)
 {
 	const auto& keyDef = Options.Key[~binding];
-	if (ImGui::MenuItem(pb::get_rc_string(keyDef.Description), keyDef.GetShortcutDescription().c_str(), selected))
+	std::string text = pb::get_rc_string(keyDef.Description);
+	auto shortcut = keyDef.GetShortcutDescription();
+	if (!shortcut.empty())
+		text += "\t" + shortcut;
+	AppendItem(menu, static_cast<UINT>(BindingMenuId + ~binding), text);
+}
+
+// Makes the menu bar again: for the language and the shortcut keys.
+void winmain::UpdateMenu()
+{
+	if (!MainWindow)
+		return;
+
+	auto menu = CreateMenu();
+
+	auto gameMenu = CreatePopupMenu();
+	AppendBindingItem(gameMenu, GameBindings::NewGame);
+	AppendItem(gameMenu, Menu1::Launch_Ball, Msg::Menu1_Launch_Ball);
+	AppendBindingItem(gameMenu, GameBindings::TogglePause);
+	AppendSeparator(gameMenu);
+	AppendItem(gameMenu, Menu1::High_Scores, Msg::Menu1_High_Scores);
+	AppendItem(gameMenu, Menu1::Demo, Msg::Menu1_Demo);
+	AppendBindingItem(gameMenu, GameBindings::Exit);
+	AppendPopup(menu, gameMenu, pb::get_rc_string(Msg::Menu1_Game));
+
+	auto optionsMenu = CreatePopupMenu();
+	AppendBindingItem(optionsMenu, GameBindings::ToggleMenuDisplay);
+	AppendBindingItem(optionsMenu, GameBindings::ToggleFullScreen);
+	auto playersMenu = CreatePopupMenu();
+	AppendItem(playersMenu, Menu1::OnePlayer, Msg::Menu1_1Player);
+	AppendItem(playersMenu, Menu1::TwoPlayers, Msg::Menu1_2Players);
+	AppendItem(playersMenu, Menu1::ThreePlayers, Msg::Menu1_3Players);
+	AppendItem(playersMenu, Menu1::FourPlayers, Msg::Menu1_4Players);
+	AppendPopup(optionsMenu, playersMenu, pb::get_rc_string(Msg::Menu1_Select_Players));
+	AppendBindingItem(optionsMenu, GameBindings::ShowControlDialog);
+	auto languageMenu = CreatePopupMenu();
+	for (int i = 0; i < static_cast<int>(Lang::Max); i++)
+		AppendItem(languageMenu, static_cast<UINT>(LanguageMenuId + i), translations::Languages[i].DisplayName);
+	AppendPopup(optionsMenu, languageMenu, "Language");
+	AppendSeparator(optionsMenu);
+
+	auto audioMenu = CreatePopupMenu();
+	AppendBindingItem(audioMenu, GameBindings::ToggleSounds);
+	AppendItem(audioMenu, static_cast<UINT>(Menu1::SoundStereo), "Stereo Sound Effects");
+	auto soundVolumeMenu = CreatePopupMenu();
+	auto musicVolumeMenu = CreatePopupMenu();
+	for (int step = 0; step <= VolumeSteps; step++)
 	{
-		HandleGameBinding(binding, false);
+		auto text = std::to_string(step * 100 / VolumeSteps) + "%";
+		AppendItem(soundVolumeMenu, static_cast<UINT>(SoundVolumeMenuId + step), text);
+		AppendItem(musicVolumeMenu, static_cast<UINT>(MusicVolumeMenuId + step), text);
 	}
+	AppendPopup(audioMenu, soundVolumeMenu, "Sound Volume");
+	auto channelsMenu = CreatePopupMenu();
+	for (int i = 0; i < CountOf(SoundChannelValues); i++)
+		AppendItem(channelsMenu, static_cast<UINT>(SoundChannelsMenuId + i), std::to_string(SoundChannelValues[i]));
+	AppendPopup(audioMenu, channelsMenu, "Sound Channels");
+	AppendSeparator(audioMenu);
+	AppendBindingItem(audioMenu, GameBindings::ToggleMusic);
+	AppendPopup(audioMenu, musicVolumeMenu, "Music Volume");
+	AppendPopup(optionsMenu, audioMenu, "Audio");
+
+	auto graphicsMenu = CreatePopupMenu();
+	AppendItem(graphicsMenu, Menu1::WindowUniformScale, Msg::Menu1_WindowUniformScale);
+	AppendItem(graphicsMenu, static_cast<UINT>(Menu1::WindowIntegerScale), "Integer Scaling");
+	AppendSeparator(graphicsMenu);
+	AppendItem(graphicsMenu, DefaultRatesMenuId, "Set Default UPS/FPS");
+	auto upsMenu = CreatePopupMenu();
+	for (int i = 0; i < CountOf(UpsValues); i++)
+		AppendItem(upsMenu, static_cast<UINT>(UpsMenuId + i), std::to_string(UpsValues[i]));
+	AppendPopup(graphicsMenu, upsMenu, "UPS");
+	auto fpsMenu = CreatePopupMenu();
+	for (int i = 0; i < CountOf(FpsValues); i++)
+		AppendItem(fpsMenu, static_cast<UINT>(FpsMenuId + i), std::to_string(FpsValues[i]));
+	AppendPopup(graphicsMenu, fpsMenu, "FPS");
+	AppendItem(graphicsMenu, UncappedUpsMenuId, "Uncapped UPS");
+	AppendItem(graphicsMenu, PreciseSleepMenuId, "Precise Sleep");
+	AppendSeparator(graphicsMenu);
+	AppendItem(graphicsMenu, HideCursorMenuId, "Hide Cursor");
+	AppendPopup(optionsMenu, graphicsMenu, "Graphics");
+
+	auto resolutionMenu = CreatePopupMenu();
+	auto resolutionStringId = Msg::Menu1_UseMaxResolution_640x480;
+	switch (fullscrn::GetMaxResolution())
+	{
+	case 0: resolutionStringId = Msg::Menu1_UseMaxResolution_640x480;
+		break;
+	case 1: resolutionStringId = Msg::Menu1_UseMaxResolution_800x600;
+		break;
+	case 2: resolutionStringId = Msg::Menu1_UseMaxResolution_1024x768;
+		break;
+	default:
+		break;
+	}
+	AppendItem(resolutionMenu, Menu1::MaximumResolution, resolutionStringId);
+	for (auto i = 0; i <= fullscrn::GetMaxResolution(); i++)
+	{
+		char buffer[20];
+		auto& res = fullscrn::resolution_array[i];
+		snprintf(buffer, sizeof buffer, "%d x %d", res.ScreenWidth, res.ScreenHeight);
+		AppendItem(resolutionMenu, static_cast<UINT>(static_cast<int>(Menu1::R640x480) + i), buffer);
+	}
+	AppendPopup(optionsMenu, resolutionMenu, pb::get_rc_string(Msg::Menu1_Table_Resolution));
+
+	auto gameDataMenu = CreatePopupMenu();
+	AppendItem(gameDataMenu, static_cast<UINT>(Menu1::Prefer3DPBGameData), "Prefer 3DPB Data");
+	AppendPopup(optionsMenu, gameDataMenu, "Game Data");
+	AppendSeparator(optionsMenu);
+	AppendItem(optionsMenu, ResetOptionsMenuId, "Reset All Options");
+	AppendPopup(menu, optionsMenu, pb::get_rc_string(Msg::Menu1_Options));
+
+	auto helpMenu = CreatePopupMenu();
+	auto cheatsMenu = CreatePopupMenu();
+	for (int i = 0; i < CountOf(CheatNames); i++)
+	{
+		if (i != CheatQuote || pb::FullTiltMode)
+			AppendItem(cheatsMenu, static_cast<UINT>(CheatMenuId + i), CheatNames[i]);
+	}
+	AppendPopup(helpMenu, cheatsMenu, "Cheats");
+	AppendSeparator(helpMenu);
+	AppendItem(helpMenu, Menu1::About_Pinball, Msg::Menu1_About_Pinball);
+	AppendPopup(menu, helpMenu, pb::get_rc_string(Msg::Menu1_Help));
+
+	auto systemMenu = GetSystemMenu(MainWindow, FALSE);
+	if (systemMenu)
+	{
+		ModifyMenuW(systemMenu, SystemShowMenuId, MF_BYCOMMAND | MF_STRING, SystemShowMenuId,
+		            wintext::ToMenuText(pb::get_rc_string(Msg::Menu1_ToggleShowMenu)).data());
+	}
+
+	auto oldMenu = MainMenu;
+	MainMenu = menu;
+	UpdateMenuVisibility();
+	if (oldMenu)
+		DestroyMenu(oldMenu);
+}
+
+void winmain::UpdateMenuVisibility()
+{
+	if (!MainWindow)
+		return;
+
+	SetMenu(MainWindow, Options.ShowMenu ? MainMenu : nullptr);
+	fullscrn::window_size_changed();
+}
+
+// The check marks and the disabled items, when the menu opens.
+void winmain::InitMenuStates(HMENU menu)
+{
+	if (menu == GetSystemMenu(MainWindow, FALSE))
+	{
+		CheckItem(menu, static_cast<UINT>(SystemShowMenuId), Options.ShowMenu);
+		return;
+	}
+	if (!menu || menu != MainMenu)
+		return;
+
+	EnableItem(menu, Menu1::Launch_Ball, LaunchBallEnabled);
+	EnableItem(menu, Menu1::High_Scores, HighScoresEnabled);
+	CheckItem(menu, Menu1::Demo, DemoActive);
+	CheckItem(menu, static_cast<UINT>(BindingMenuId + ~GameBindings::ToggleMenuDisplay), Options.ShowMenu);
+	CheckItem(menu, static_cast<UINT>(BindingMenuId + ~GameBindings::ToggleFullScreen), Options.FullScreen);
+	CheckItem(menu, static_cast<UINT>(BindingMenuId + ~GameBindings::ToggleSounds), Options.Sounds);
+	CheckItem(menu, static_cast<UINT>(BindingMenuId + ~GameBindings::ToggleMusic), Options.Music);
+
+	for (int i = 0; i < 4; i++)
+		CheckItem(menu, static_cast<UINT>(static_cast<int>(Menu1::OnePlayer) + i), Options.Players == i + 1);
+
+	auto currentLanguage = translations::GetCurrentLanguage();
+	for (int i = 0; i < static_cast<int>(Lang::Max); i++)
+		CheckItem(menu, static_cast<UINT>(LanguageMenuId + i),
+		          currentLanguage->Language == translations::Languages[i].Language);
+
+	CheckItem(menu, Menu1::SoundStereo, Options.SoundStereo);
+	auto soundStep = VolumeToStep(Options.SoundVolume), musicStep = VolumeToStep(Options.MusicVolume);
+	for (int step = 0; step <= VolumeSteps; step++)
+	{
+		CheckItem(menu, static_cast<UINT>(SoundVolumeMenuId + step), step == soundStep);
+		CheckItem(menu, static_cast<UINT>(MusicVolumeMenuId + step), step == musicStep);
+	}
+	for (int i = 0; i < CountOf(SoundChannelValues); i++)
+		CheckItem(menu, static_cast<UINT>(SoundChannelsMenuId + i), Options.SoundChannels == SoundChannelValues[i]);
+
+	CheckItem(menu, Menu1::WindowUniformScale, Options.UniformScaling);
+	CheckItem(menu, Menu1::WindowIntegerScale, Options.IntegerScaling);
+	for (int i = 0; i < CountOf(UpsValues); i++)
+		CheckItem(menu, static_cast<UINT>(UpsMenuId + i), Options.UpdatesPerSecond == UpsValues[i]);
+	for (int i = 0; i < CountOf(FpsValues); i++)
+		CheckItem(menu, static_cast<UINT>(FpsMenuId + i), Options.FramesPerSecond == FpsValues[i]);
+
+	char buffer[80];
+	snprintf(buffer, sizeof buffer, "Uncapped UPS (FPS ratio %02.02f)", UpdateToFrameRatio);
+	ModifyMenuW(menu, UncappedUpsMenuId,
+	            MF_BYCOMMAND | MF_STRING | (Options.UncappedUpdatesPerSecond ? MF_CHECKED : MF_UNCHECKED),
+	            UncappedUpsMenuId, wintext::ToWide(buffer).data());
+	CheckItem(menu, static_cast<UINT>(PreciseSleepMenuId), Options.HybridSleep);
+	CheckItem(menu, static_cast<UINT>(HideCursorMenuId), Options.HideCursor);
+
+	CheckItem(menu, Menu1::MaximumResolution, Options.Resolution == -1);
+	for (auto i = 0; i <= fullscrn::GetMaxResolution(); i++)
+		CheckItem(menu, static_cast<UINT>(static_cast<int>(Menu1::R640x480) + i), Options.Resolution == i);
+	CheckItem(menu, Menu1::Prefer3DPBGameData, Options.Prefer3DPBGameData);
+
+	CheckItem(menu, static_cast<UINT>(CheatMenuId + CheatHiddenTest), pb::cheat_mode);
+	CheckItem(menu, static_cast<UINT>(CheatMenuId + CheatBmax), control::table_unlimited_balls);
+	CheckItem(menu, static_cast<UINT>(CheatMenuId + CheatEasyMode), control::easyMode);
+}
+
+void winmain::OnMenuCommand(int id)
+{
+	if (id >= BindingMenuId && id < BindingMenuId + ~GameBindings::Max)
+	{
+		HandleGameBinding(static_cast<GameBindings>(id - BindingMenuId), false);
+		return;
+	}
+	if (id >= LanguageMenuId && id < LanguageMenuId + static_cast<int>(Lang::Max))
+	{
+		auto& item = translations::Languages[id - LanguageMenuId];
+		if (translations::GetCurrentLanguage()->Language != item.Language)
+		{
+			translations::SetCurrentLanguage(item.ShortName);
+			Restart();
+		}
+		return;
+	}
+	if (id >= SoundVolumeMenuId && id <= SoundVolumeMenuId + VolumeSteps)
+	{
+		Options.SoundVolume = (id - SoundVolumeMenuId) * options::MaxVolume / VolumeSteps;
+		Sound::SetVolume(Options.SoundVolume);
+		return;
+	}
+	if (id >= MusicVolumeMenuId && id <= MusicVolumeMenuId + VolumeSteps)
+	{
+		Options.MusicVolume = (id - MusicVolumeMenuId) * options::MaxVolume / VolumeSteps;
+		midi::SetVolume(Options.MusicVolume);
+		return;
+	}
+	if (id >= SoundChannelsMenuId && id < SoundChannelsMenuId + CountOf(SoundChannelValues))
+	{
+		Options.SoundChannels = SoundChannelValues[id - SoundChannelsMenuId];
+		Sound::SetChannels(Options.SoundChannels);
+		return;
+	}
+	if (id >= UpsMenuId && id < UpsMenuId + CountOf(UpsValues))
+	{
+		Options.UpdatesPerSecond = UpsValues[id - UpsMenuId];
+		Options.FramesPerSecond = std::min(Options.UpdatesPerSecond.V, Options.FramesPerSecond.V);
+		UpdateFrameRate();
+		return;
+	}
+	if (id >= FpsMenuId && id < FpsMenuId + CountOf(FpsValues))
+	{
+		Options.FramesPerSecond = FpsValues[id - FpsMenuId];
+		Options.UpdatesPerSecond = std::max(Options.UpdatesPerSecond.V, Options.FramesPerSecond.V);
+		UpdateFrameRate();
+		return;
+	}
+	if (id >= CheatMenuId && id < CheatMenuId + CountOf(CheatNames))
+	{
+		pb::PushCheat(CheatNames[id - CheatMenuId]);
+		return;
+	}
+
+	switch (id)
+	{
+	case DefaultRatesMenuId:
+		Options.UpdatesPerSecond = options::DefUps;
+		Options.FramesPerSecond = options::DefFps;
+		UpdateFrameRate();
+		return;
+	case UncappedUpsMenuId:
+		Options.UncappedUpdatesPerSecond ^= true;
+		return;
+	case PreciseSleepMenuId:
+		Options.HybridSleep ^= true;
+		SleepState = WelfordState{};
+		SpinThreshold = 0;
+		return;
+	case HideCursorMenuId:
+		Options.HideCursor ^= true;
+		if (!Options.HideCursor && CursorHidden)
+		{
+			CursorHidden = false;
+			SetCursor(LoadCursorA(nullptr, IDC_ARROW));
+		}
+		return;
+	case ResetOptionsMenuId:
+		options::ResetAllOptions();
+		Restart();
+		return;
+	default:
+		break;
+	}
+
+	switch (static_cast<Menu1>(id))
+	{
+	case Menu1::Launch_Ball:
+		end_pause();
+		pb::launch_ball();
+		break;
+	case Menu1::High_Scores:
+		pause(false);
+		pb::high_scores();
+		break;
+	case Menu1::Demo:
+		end_pause();
+		pb::toggle_demo();
+		break;
+	case Menu1::OnePlayer:
+	case Menu1::TwoPlayers:
+	case Menu1::ThreePlayers:
+	case Menu1::FourPlayers:
+		options::toggle(static_cast<Menu1>(id));
+		new_game();
+		break;
+	case Menu1::SoundStereo:
+	case Menu1::WindowUniformScale:
+	case Menu1::WindowIntegerScale:
+	case Menu1::Prefer3DPBGameData:
+	case Menu1::MaximumResolution:
+	case Menu1::R640x480:
+	case Menu1::R800x600:
+	case Menu1::R1024x768:
+		options::toggle(static_cast<Menu1>(id));
+		break;
+	case Menu1::About_Pinball:
+		pause(false);
+		ShowAboutDialog = true;
+		break;
+	default:
+		break;
+	}
+}
+
+std::string winmain::GetExeFolder()
+{
+	char path[MAX_PATH];
+	auto length = GetModuleFileNameA(nullptr, path, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH)
+		return {};
+
+	std::string folder(path, length);
+	auto separator = folder.rfind('\\');
+	if (separator == std::string::npos)
+		return {};
+	return folder.substr(0, separator + 1);
+}
+
+// The Pinball folder of Windows NT 4.0: Program Files\Windows NT\Pinball.
+std::string winmain::GetPinballFolder()
+{
+	char subKey[] = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion";
+	char valueName[] = "ProgramFilesDir";
+	char folder[MAX_PATH]{};
+	HKEY key;
+	if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &key) == ERROR_SUCCESS)
+	{
+		char value[MAX_PATH]{};
+		DWORD type = 0, size = sizeof value - 1;
+		if (RegQueryValueExA(key, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(value), &size) == ERROR_SUCCESS)
+		{
+			if (type == REG_SZ)
+				strcpy(folder, value);
+			else if (type == REG_EXPAND_SZ)
+			{
+				auto length = ExpandEnvironmentStringsA(value, folder, sizeof folder);
+				if (length == 0 || length > sizeof folder)
+					folder[0] = 0;
+			}
+		}
+		RegCloseKey(key);
+	}
+
+	std::string result = folder;
+	if (result.empty())
+	{
+		char drive[MAX_PATH];
+		auto length = GetEnvironmentVariableA("SystemDrive", drive, sizeof drive);
+		result = length > 0 && length < sizeof drive ? drive : "C:";
+		result += "\\Program Files";
+	}
+	if (result.back() != '\\')
+		result += '\\';
+	return result + "Windows NT\\Pinball\\";
 }

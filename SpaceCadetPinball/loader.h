@@ -6,6 +6,7 @@ class TPinballComponent;
 struct zmap_header_type;
 struct gdrv_bitmap8;
 class DatFile;
+struct WaveSample;
 
 struct errorMsg
 {
@@ -15,7 +16,7 @@ struct errorMsg
 
 struct soundListStruct
 {
-	Mix_Chunk* WavePtr;
+	WaveSample* WavePtr;
 	int GroupIndex;
 	int Loaded;
 	float Duration;

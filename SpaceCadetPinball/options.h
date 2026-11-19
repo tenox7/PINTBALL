@@ -41,6 +41,9 @@ enum class InputTypes
 	GameController,
 };
 
+// The mouse buttons of GameInput, numbered as SDL numbers them.
+constexpr int MouseButtonLeft = 1, MouseButtonMiddle = 2, MouseButtonRight = 3;
+
 struct GameInput
 {
 	InputTypes Type;
@@ -102,14 +105,14 @@ public:
 	                     DefUps = 120, DefFps = 60;
 	// Original uses 8 sound channels
 	static constexpr int MaxSoundChannels = 32, MinSoundChannels = 1, DefSoundChannels = 8;
-	static constexpr int MaxVolume = MIX_MAX_VOLUME, MinVolume = 0, DefVolume = MaxVolume;
+	static constexpr int MaxVolume = 128, MinVolume = 0, DefVolume = MaxVolume;
 	static struct optionsStruct Options;
 	static std::vector<struct OptionBase*> AllOptions;
 
-	static void InitPrimary();
+	static void InitPrimary(const std::string& iniPath);
 	static void InitSecondary();
 	static void uninit();
-	static const std::string& GetSetting(const std::string& key, const std::string& defaultValue);
+	static std::string GetSetting(const std::string& key, const std::string& defaultValue);
 	static void SetSetting(const std::string& key, const std::string& value);
 	static int get_int(LPCSTR lpValueName, int defaultValue);
 	static void set_int(LPCSTR lpValueName, int data);
@@ -120,19 +123,28 @@ public:
 	static void toggle(Menu1 uIDCheckItem);
 	static void InputDown(GameInput input);
 	static void ShowControlDialog();
-	static void RenderControlDialog();
-	static bool WaitingForInput() { return ControlWaitingForInput; }
+	static bool RenderControlDialog();
+	static bool WaitingForInput() { return false; }
 	static std::vector<GameBindings> MapGameInput(GameInput key);
 	static void ResetAllOptions();
 private:
-	static std::unordered_map<std::string, std::string> settings;
+	// The settings are the [Settings] section of an INI file.
+	static std::vector<std::pair<std::string, std::string>> settings;
+	static std::string IniPath;
 	static bool ShowDialog;
-	static GameInput* ControlWaitingForInput;
 
-	static void MyUserData_ReadLine(ImGuiContext* ctx, ImGuiSettingsHandler* handler, void* entry, const char* line);
-	static void* MyUserData_ReadOpen(ImGuiContext* ctx, ImGuiSettingsHandler* handler, const char* name);
-	static void MyUserData_WriteAll(ImGuiContext* ctx, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf);
+	// Player controls dialog
+	static int WaitingRow, WaitingColumn, SwallowKey;
+	static bool SwallowMouseUp;
+	static WNDPROC ButtonProc;
+
+	static void LoadSettings();
+	static void SaveSettings();
 	static void PostProcessOptions();
+	static BOOL CALLBACK ControlDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK BindingButtonProc(HWND button, UINT message, WPARAM wParam, LPARAM lParam);
+	static void UpdateControlTexts(HWND dialog);
+	static void EndWaiting(HWND dialog, const GameInput* input);
 };
 
 
@@ -262,9 +274,7 @@ struct optionsStruct
 	BoolOption FullScreen;
 	IntOption Players;
 	IntOption Resolution;
-	FloatOption UIScale;
 	BoolOption UniformScaling;
-	BoolOption LinearFiltering;
 	IntOption FramesPerSecond;
 	IntOption UpdatesPerSecond;
 	BoolOption ShowMenu;
@@ -276,17 +286,6 @@ struct optionsStruct
 	IntOption SoundVolume;
 	IntOption MusicVolume;
 	BoolOption SoundStereo;
-	BoolOption DebugOverlay;
-	BoolOption DebugOverlayGrid;
-	BoolOption DebugOverlayAllEdges;
-	BoolOption DebugOverlayBallPosition;
-	BoolOption DebugOverlayBallEdges;
-	BoolOption DebugOverlayCollisionMask;
-	BoolOption DebugOverlaySprites;
-	BoolOption DebugOverlaySounds;
-	BoolOption DebugOverlayBallDepthGrid;
-	BoolOption DebugOverlayAabb;
-	StringOption FontFileName;
 	StringOption Language;
 	BoolOption HideCursor;
 };

@@ -24,7 +24,7 @@ public:
 
 	static void show_high_score_dialog();
 	static void show_and_set_high_score_dialog(high_score_entry score);
-	static void RenderHighScoreDialog();
+	static bool RenderHighScoreDialog();
 private:
 	static bool dlg_enter_name;
 	static high_score_entry DlgData;
@@ -33,4 +33,6 @@ private:
 
 	static void clear_table();
 	static void place_new_score_into(high_score_entry data);
+	static BOOL CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam);
+	static void FillRows(HWND dialog);
 };

@@ -8,6 +8,8 @@ enum class BitmapTypes : uint8_t
 	Spliced = 3,
 };
 
+// The layout is A<<24 | R<<16 | G<<8 | B. In memory this is B, G, R, A: the
+// pixel format of a 32-bit BI_RGB DIB.
 struct ColorRgba
 {
 	static constexpr ColorRgba Black() { return ColorRgba{ 0, 0, 0, 255 }; }
@@ -53,8 +55,6 @@ struct gdrv_bitmap8
 	gdrv_bitmap8(const struct dat8BitBmpHeader& header);
 	~gdrv_bitmap8();
 	void ScaleIndexed(float scaleX, float scaleY);
-	void CreateTexture(const char* scaleHint, int access);
-	void BlitToTexture();
 	ColorRgba* BmpBufPtr1;
 	char* IndexedBmpPtr;
 	int Width;
@@ -65,7 +65,6 @@ struct gdrv_bitmap8
 	int XPosition;
 	int YPosition;
 	unsigned Resolution;
-	SDL_Texture* Texture;
 };
 
 
@@ -80,9 +79,7 @@ public:
 	static void copy_bitmap_w_transparency(gdrv_bitmap8* dstBmp, int width, int height, int xOff, int yOff,
 	                                       gdrv_bitmap8* srcBmp, int srcXOff, int srcYOff);
 	static void ScrollBitmapHorizontal(gdrv_bitmap8* bmp, int xStart);
-	static void grtext_draw_ttext_in_box();
 	static void ApplyPalette(gdrv_bitmap8& bmp);
-	static void CreatePreview(gdrv_bitmap8& bmp);
 private:
 	static ColorRgba current_palette[256];
 };

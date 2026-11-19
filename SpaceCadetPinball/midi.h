@@ -91,26 +91,34 @@ enum class MidiTracks
 	Track3
 };
 
+// Music with the MCI sequencer. A .MDS file is changed to a temporary .MID
+// file. The track plays again when MCI reports its end (MM_MCINOTIFY).
 class midi
 {
 public:
-	static int music_init(bool mixOpen, int volume);
+	static int music_init(bool enabled, int volume);
 	static void music_shutdown();
 	static void music_play();
 	static void music_stop();
 	static void SetVolume(int volume);
 	static bool play_track(MidiTracks track, bool replay);
 	static MidiTracks get_active_track();
+	static void OnMciNotify(WPARAM flags, LPARAM deviceId);
 private:
-	static std::vector<Mix_Music*> LoadedTracks;
-	static Mix_Music* track1, * track2, * track3;
+	static std::vector<std::string> TempFiles;
+	static std::string track1, track2, track3;
 	static MidiTracks active_track, NextTrack;
 	static int Volume;
-	static bool IsPlaying, MixOpen;
+	static bool IsPlaying, Enabled;
+	static MCIDEVICEID DeviceId;
 
 	static void StopPlayback();
-	static Mix_Music* load_track(std::string fileName);
-	static Mix_Music* load_track_sub(std::string fileName, bool isMidi);
-	static Mix_Music* TrackToMidi(MidiTracks track);
+	static bool OpenDevice(const std::string& path);
+	static bool PlayFromStart();
+	static void ApplyVolume();
+	static std::string load_track(std::string fileName);
+	static std::string load_track_sub(std::string fileName, bool isMidi);
+	static std::string WriteTempFile(const std::vector<uint8_t>& data);
+	static const std::string* TrackToMidi(MidiTracks track);
 	static std::vector<uint8_t>* MdsToMidi(std::string file);
 };

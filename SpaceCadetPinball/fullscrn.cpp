@@ -22,6 +22,7 @@ float fullscrn::ScaleX = 1;
 float fullscrn::ScaleY = 1;
 int fullscrn::OffsetX = 0;
 int fullscrn::OffsetY = 0;
+WINDOWPLACEMENT fullscrn::WindowedPlacement{};
 
 void fullscrn::init()
 {
@@ -53,25 +54,37 @@ int fullscrn::set_screen_mode(int isFullscreen)
 	return result;
 }
 
+// Full screen on Windows NT 4.0: a pop-up window that covers the screen. The
+// display mode does not change.
 int fullscrn::enableFullscreen()
 {
-	if (!display_changed)
+	auto window = winmain::MainWindow;
+	if (!display_changed && window)
 	{
-		if (SDL_SetWindowFullscreen(winmain::MainWindow, SDL_WINDOW_FULLSCREEN_DESKTOP) == 0)
-		{
-			display_changed = 1;
-			return 1;
-		}
+		WindowedPlacement.length = sizeof WindowedPlacement;
+		GetWindowPlacement(window, &WindowedPlacement);
+
+		auto style = GetWindowLongA(window, GWL_STYLE);
+		SetWindowLongA(window, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+		SetWindowPos(window, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+		             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+		display_changed = 1;
+		return 1;
 	}
 	return 0;
 }
 
 int fullscrn::disableFullscreen()
 {
-	if (display_changed)
+	auto window = winmain::MainWindow;
+	if (display_changed && window)
 	{
-		if (SDL_SetWindowFullscreen(winmain::MainWindow, 0) == 0)
-			display_changed = 0;
+		auto style = GetWindowLongA(window, GWL_STYLE);
+		SetWindowLongA(window, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
+		SetWindowPlacement(window, &WindowedPlacement);
+		SetWindowPos(window, nullptr, 0, 0, 0, 0,
+		             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+		display_changed = 0;
 	}
 
 	return 0;
@@ -108,10 +121,17 @@ int fullscrn::GetMaxResolution()
 
 void fullscrn::window_size_changed()
 {
-	int width, height;
-	SDL_GetRendererOutputSize(winmain::Renderer, &width, &height);
-	int menuHeight = options::Options.ShowMenu ? winmain::MainMenuHeight : 0;
-	height -= menuHeight;
+	if (!winmain::MainWindow)
+		return;
+
+	// The menu bar is not in the client area, so the full client area is for the table.
+	RECT client{};
+	GetClientRect(winmain::MainWindow, &client);
+	int width = client.right - client.left;
+	int height = client.bottom - client.top;
+	if (width <= 0 || height <= 0)
+		return; // The window is minimized.
+
 	auto res = &resolution_array[resolution];
 	ScaleX = static_cast<float>(width) / res->TableWidth;
 	ScaleY = static_cast<float>(height) / res->TableHeight;
@@ -134,27 +154,5 @@ void fullscrn::window_size_changed()
 	OffsetX = offset2X / 2;
 	OffsetY = offset2Y / 2;
 
-	render::DestinationRect = SDL_Rect
-	{
-		OffsetX, OffsetY + menuHeight,
-		width - offset2X, height - offset2Y
-	};
-}
-
-SDL_Rect fullscrn::GetScreenRectFromPinballRect(SDL_Rect rect)
-{
-	SDL_Rect converted_rect;
-
-	converted_rect.x = rect.x * render::DestinationRect.w / render::vscreen->Width + render::DestinationRect.x;
-	converted_rect.y = rect.y * render::DestinationRect.h / render::vscreen->Height + render::DestinationRect.y;
-
-	converted_rect.w = rect.w * render::DestinationRect.w / render::vscreen->Width;
-	converted_rect.h = rect.h * render::DestinationRect.h / render::vscreen->Height;
-
-	return converted_rect;
-}
-
-float fullscrn::GetScreenToPinballRatio()
-{
-	return (float) render::DestinationRect.w / render::vscreen->Width;
+	render::SetDestination(OffsetX, OffsetY, width - offset2X, height - offset2Y);
 }

@@ -1,17 +1,19 @@
 #include "pch.h"
 #include "midi.h"
 
-
+#include "options.h"
 #include "pb.h"
+#include "winmain.h"
 
 
-std::vector<Mix_Music*> midi::LoadedTracks{};
-Mix_Music* midi::track1, * midi::track2, * midi::track3;
+std::vector<std::string> midi::TempFiles{};
+std::string midi::track1, midi::track2, midi::track3;
 MidiTracks midi::active_track, midi::NextTrack;
-int midi::Volume = MIX_MAX_VOLUME;
-bool midi::IsPlaying = false, midi::MixOpen = false;
+int midi::Volume = options::MaxVolume;
+bool midi::IsPlaying = false, midi::Enabled = false;
+MCIDEVICEID midi::DeviceId = 0;
 
-constexpr uint32_t FOURCC(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+constexpr uint32_t MakeFourCC(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 {
 	return static_cast<uint32_t>((d << 24) | (c << 16) | (b << 8) | a);
 }
@@ -53,22 +55,26 @@ void midi::music_stop()
 
 void midi::StopPlayback()
 {
-	if (active_track != MidiTracks::None)
+	if (DeviceId)
 	{
-		if (MixOpen)
-			Mix_HaltMusic();
-		active_track = MidiTracks::None;
+		mciSendCommandA(DeviceId, MCI_STOP, 0, 0);
+		mciSendCommandA(DeviceId, MCI_CLOSE, 0, 0);
+		DeviceId = 0;
 	}
+	active_track = MidiTracks::None;
 }
 
-int midi::music_init(bool mixOpen, int volume)
+int midi::music_init(bool enabled, int volume)
 {
-	MixOpen = mixOpen;
-	SetVolume(volume);
+	// Without a MIDI output device, the sequencer can not play.
+	Enabled = enabled && midiOutGetNumDevs() > 0;
+	Volume = volume;
 	active_track = MidiTracks::None;
 	NextTrack = MidiTracks::None;
 	IsPlaying = false;
-	track1 = track2 = track3 = nullptr;
+	track1.clear();
+	track2.clear();
+	track3.clear();
 
 	if (pb::FullTiltMode)
 	{
@@ -77,7 +83,7 @@ int midi::music_init(bool mixOpen, int volume)
 		track3 = load_track("TABA3");
 
 		// FT demo .006 has only one music track, but it is nearly 9 min. long
-		if (!track1 && pb::FullTiltDemoMode)
+		if (track1.empty() && pb::FullTiltDemoMode)
 			track1 = load_track("DEMO");
 	}
 	else
@@ -86,32 +92,51 @@ int midi::music_init(bool mixOpen, int volume)
 		track1 = load_track("PINBALL");
 	}
 
-	return track1 != nullptr;
+	return !track1.empty();
 }
 
 void midi::music_shutdown()
 {
 	music_stop();
+	StopPlayback();
 
-	for (auto midi : LoadedTracks)
-	{
-		Mix_FreeMusic(midi);
-	}
+	for (const auto& file : TempFiles)
+		DeleteFileA(file.c_str());
+	TempFiles.clear();
+	track1.clear();
+	track2.clear();
+	track3.clear();
 	active_track = MidiTracks::None;
-	LoadedTracks.clear();
 }
 
 void midi::SetVolume(int volume)
 {
 	Volume = volume;
-	if (MixOpen)
-		Mix_VolumeMusic(volume);
+	if (DeviceId)
+		ApplyVolume();
 }
 
-Mix_Music* midi::load_track(std::string fileName)
+// MCI has no volume for the sequencer: set the volume of the MIDI devices.
+// Devices without a volume control return an error, which is not a problem.
+void midi::ApplyVolume()
 {
-	if (!MixOpen || pb::quickFlag)
-		return nullptr;
+	auto level = static_cast<DWORD>(Clamp(Volume, 0, options::MaxVolume) * 0xFFFF / options::MaxVolume);
+	auto stereoLevel = level | (level << 16);
+	auto count = midiOutGetNumDevs();
+	for (UINT device = 0; device < count; device++)
+	{
+#if WINVER >= 0x0400
+		midiOutSetVolume(reinterpret_cast<HMIDIOUT>(static_cast<size_t>(device)), stereoLevel);
+#else
+		midiOutSetVolume(device, stereoLevel);
+#endif
+	}
+}
+
+std::string midi::load_track(std::string fileName)
+{
+	if (!Enabled || pb::quickFlag)
+		return {};
 
 	if (pb::FullTiltMode)
 	{
@@ -120,60 +145,93 @@ Mix_Music* midi::load_track(std::string fileName)
 		fileName.insert(0, "SOUND");
 	}
 
-	auto audio = load_track_sub(fileName, true);
-	if (!audio)
-		audio = load_track_sub(fileName, false);
-
-	if (!audio)
-		return nullptr;
-
-	LoadedTracks.push_back(audio);
-	return audio;
+	auto path = load_track_sub(fileName, true);
+	if (path.empty())
+		path = load_track_sub(fileName, false);
+	return path;
 }
 
-Mix_Music* midi::load_track_sub(std::string fileName, bool isMidi)
+std::string midi::load_track_sub(std::string fileName, bool isMidi)
 {
 	// FT has music in two formats, depending on game version: MIDI in 16bit, MIDS in 32bit.
 	// 3DPB music is MIDI only.
-	Mix_Music* audio = nullptr;
 	fileName += isMidi ? ".MID" : ".MDS";
-	for (int i = 0; i < 2; i++)
+	auto filePath = pb::make_path_name(fileName);
+	if (isMidi)
 	{
-		if (i == 1)
-			std::transform(fileName.begin(), fileName.end(), fileName.begin(),
-			               [](unsigned char c) { return std::tolower(c); });
-		if (isMidi)
-		{
-			auto filePath = pb::make_path_name(fileName);
-			auto fileHandle = fopenu(filePath.c_str(), "rb");
-			if (fileHandle)
-			{
-				fclose(fileHandle);
-				auto rw = SDL_RWFromFile(filePath.c_str(), "rb");
-				audio = Mix_LoadMUS_RW(rw, 1);
-				break;
-			}
-		}
-		else
-		{
-			auto midi = MdsToMidi(pb::make_path_name(fileName));
-			if (midi)
-			{
-				// Dump converted MIDI file
-				/*auto filePath = fileName + ".midi";
-				FILE* fileHandle = fopenu(filePath.c_str(), "wb");
-				fwrite(midi->data(), 1, midi->size(), fileHandle);
-				fclose(fileHandle);*/
-
-				auto rw = SDL_RWFromMem(midi->data(), static_cast<int>(midi->size()));
-				audio = Mix_LoadMUS_RW(rw, 1); // This call seems to leak memory no matter what.
-				delete midi;
-				break;
-			}
-		}
+		auto fileHandle = fopenu(filePath.c_str(), "rb");
+		if (!fileHandle)
+			return {};
+		fclose(fileHandle);
+		return filePath;
 	}
 
-	return audio;
+	auto midi = MdsToMidi(filePath);
+	if (!midi)
+		return {};
+	auto tempPath = WriteTempFile(*midi);
+	delete midi;
+	return tempPath;
+}
+
+// Writes a converted MIDI file to the temporary folder. music_shutdown deletes it.
+std::string midi::WriteTempFile(const std::vector<uint8_t>& data)
+{
+	char tempFolder[MAX_PATH], tempPath[MAX_PATH];
+	auto length = GetTempPathA(MAX_PATH, tempFolder);
+	if (length == 0 || length >= MAX_PATH)
+		return {};
+	if (!GetTempFileNameA(tempFolder, "pbm", 0, tempPath))
+		return {};
+
+	auto written = 0u;
+	auto fileHandle = fopenu(tempPath, "wb");
+	if (fileHandle)
+	{
+		written = static_cast<unsigned>(fwrite(data.data(), 1, data.size(), fileHandle));
+		fclose(fileHandle);
+	}
+	if (written != data.size())
+	{
+		DeleteFileA(tempPath);
+		return {};
+	}
+
+	TempFiles.push_back(tempPath);
+	return tempPath;
+}
+
+bool midi::OpenDevice(const std::string& path)
+{
+	MCI_OPEN_PARMSA openParms{};
+	openParms.lpstrDeviceType = "sequencer";
+	openParms.lpstrElementName = path.c_str();
+	if (mciSendCommandA(0, MCI_OPEN, MCI_OPEN_TYPE | MCI_OPEN_ELEMENT, reinterpret_cast<DWORD>(&openParms)) != 0)
+		return false;
+
+	DeviceId = openParms.wDeviceID;
+	return true;
+}
+
+// Plays from the start. MCI sends MM_MCINOTIFY to the main window at the end.
+bool midi::PlayFromStart()
+{
+	MCI_PLAY_PARMS playParms{};
+	playParms.dwCallback = reinterpret_cast<DWORD>(winmain::MainWindow);
+	playParms.dwFrom = 0;
+	return mciSendCommandA(DeviceId, MCI_PLAY, MCI_FROM | MCI_NOTIFY, reinterpret_cast<DWORD>(&playParms)) == 0;
+}
+
+void midi::OnMciNotify(WPARAM flags, LPARAM deviceId)
+{
+	// The track ended: play it again. A stopped or replaced track sends
+	// MCI_NOTIFY_ABORTED or MCI_NOTIFY_SUPERSEDED.
+	if (flags == MCI_NOTIFY_SUCCESSFUL && DeviceId && static_cast<MCIDEVICEID>(deviceId) == DeviceId &&
+		IsPlaying && active_track != MidiTracks::None)
+	{
+		if (!PlayFromStart())
+			StopPlayback();
+	}
 }
 
 bool midi::play_track(MidiTracks track, bool replay)
@@ -190,15 +248,15 @@ bool midi::play_track(MidiTracks track, bool replay)
 		return false;
 	}
 
-	if (MixOpen && Mix_PlayMusic(midi, -1))
+	if (!OpenDevice(*midi))
+		return false;
+	if (!PlayFromStart())
 	{
-		active_track = MidiTracks::None;
+		StopPlayback();
 		return false;
 	}
 
-	// On Windows, MIDI volume can only be set during playback.
-	// And it changes application master volume for some reason.
-	SetVolume(Volume);
+	ApplyVolume();
 	active_track = track;
 	return true;
 }
@@ -211,9 +269,9 @@ MidiTracks midi::get_active_track()
 		return active_track;
 }
 
-Mix_Music* midi::TrackToMidi(MidiTracks track)
+const std::string* midi::TrackToMidi(MidiTracks track)
 {
-	Mix_Music* midi;
+	const std::string* midi;
 	switch (track)
 	{
 	default:
@@ -221,20 +279,20 @@ Mix_Music* midi::TrackToMidi(MidiTracks track)
 		midi = nullptr;
 		break;
 	case MidiTracks::Track1:
-		midi = track1;
+		midi = &track1;
 		break;
 	case MidiTracks::Track2:
-		midi = track2;
+		midi = &track2;
 		break;
 	case MidiTracks::Track3:
-		midi = track3;
+		midi = &track3;
 		break;
 	}
-	return midi;
+	return midi && !midi->empty() ? midi : nullptr;
 }
 
 /// <summary>
-/// SDL_mixed does not support MIDS. To support FT music, a conversion to MIDI is required.
+/// The MCI sequencer does not play MIDS. To play FT music, a conversion to MIDI is required.
 /// </summary>
 /// <param name="file">Path to .MDS file</param>
 /// <returns>Vector that contains MIDI file</returns>
@@ -261,9 +319,9 @@ std::vector<uint8_t>* midi::MdsToMidi(std::string file)
 			returnCode = 3;
 			break;
 		}
-		if (fileBuf->Riff != FOURCC('R', 'I', 'F', 'F') ||
-			fileBuf->Mids != FOURCC('M', 'I', 'D', 'S') ||
-			fileBuf->Fmt != FOURCC('f', 'm', 't', ' '))
+		if (fileBuf->Riff != MakeFourCC('R', 'I', 'F', 'F') ||
+			fileBuf->Mids != MakeFourCC('M', 'I', 'D', 'S') ||
+			fileBuf->Fmt != MakeFourCC('f', 'm', 't', ' '))
 		{
 			returnCode = 3;
 			break;
@@ -287,7 +345,7 @@ std::vector<uint8_t>* midi::MdsToMidi(std::string file)
 		auto streamIdUsed = fileBuf->dwFlags == 0;
 		auto dataChunk = reinterpret_cast<riff_data*>(reinterpret_cast<char*>(&fileBuf->dwTimeFormat) + fileBuf->
 			FmtSize);
-		if (dataChunk->Data != FOURCC('d', 'a', 't', 'a'))
+		if (dataChunk->Data != MakeFourCC('d', 'a', 't', 'a'))
 		{
 			returnCode = 3;
 			break;

@@ -8,7 +8,6 @@
 #include "score.h"
 #include "TPinballTable.h"
 #include "winmain.h"
-#include "DebugOverlay.h"
 #include "proj.h"
 
 std::vector<render_sprite*> render::sprite_list, render::ball_list;
@@ -17,7 +16,15 @@ int render::zmap_offsetX, render::zmap_offsetY, render::offset_x, render::offset
 rectangle_type render::vscreen_rect;
 gdrv_bitmap8 *render::vscreen, *render::background_bitmap, *render::ball_bitmap[20];
 zmap_header_type* render::zscreen;
-SDL_Rect render::DestinationRect{};
+int render::DestX = 0, render::DestY = 0, render::DestWidth = 0, render::DestHeight = 0;
+HDC render::BackDC = nullptr;
+HBITMAP render::BackBitmap = nullptr, render::BackOldBitmap = nullptr;
+ColorRgba* render::BackPixels = nullptr;
+int render::BackWidth = 0, render::BackHeight = 0, render::MapSrcWidth = 0, render::MapSrcHeight = 0;
+std::vector<int> render::MapX, render::MapY;
+RECT render::DirtyRects[MaxDirtyRects];
+int render::DirtyCount = 0;
+bool render::FullDirty = true, render::ShiftedLast = false;
 
 render_sprite::render_sprite(VisualTypes visualType, gdrv_bitmap8* bmp, zmap_header_type* zMap,
 	int xPosition, int yPosition, rectangle_type* boundingRect)
@@ -119,7 +126,8 @@ void render::init(gdrv_bitmap8* bmp, int width, int height)
 	else
 		gdrv::fill_bitmap(vscreen, vscreen->Width, vscreen->Height, 0, 0, 0);
 
-	recreate_screen_texture();
+	DirtyCount = 0;
+	FullDirty = true;
 }
 
 void render::uninit()
@@ -134,12 +142,14 @@ void render::uninit()
 		delete ball_list[0];
 	for (auto& ballBmp : ball_bitmap)
 		delete ballBmp;
-	DebugOverlay::UnInit();
-}
 
-void render::recreate_screen_texture()
-{
-	vscreen->CreateTexture(options::Options.LinearFiltering ? "linear" : "nearest", SDL_TEXTUREACCESS_STREAMING);
+	vscreen = nullptr;
+	zscreen = nullptr;
+	ReleaseBackBuffer();
+	DirtyCount = 0;
+	FullDirty = true;
+	offset_x = offset_y = 0;
+	ShiftedLast = false;
 }
 
 void render::update()
@@ -360,167 +370,277 @@ void render::build_occlude_list()
 	delete spriteArr;
 }
 
-void render::SpriteViewer(bool* show)
+// Integer division that rounds up; the values are not negative.
+static int CeilDiv(int value, int divisor)
 {
-	static const char* BitmapTypes[] =
-	{
-		"None",
-		"RawBitmap",
-		"DibBitmap",
-		"Spliced",
-	};
-	static float scale = 1.0f;
-	auto uv_min = ImVec2(0.0f, 0.0f); // Top-left
-	auto uv_max = ImVec2(1.0f, 1.0f); // Lower-right
-	auto tint_col = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // No tint
-	auto border_col = ImVec4(1.0f, 1.0f, 1.0f, 0.5f); // 50% opaque white
-
-	if (ImGui::Begin("Sprite viewer", show, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar))
-	{
-		if (ImGui::BeginMenuBar())
-		{
-			ImGui::SliderFloat("Sprite scale", &scale, 0.1f, 10.0f, "scale = %.3f");
-			ImGui::EndMenuBar();
-		}
-
-		for (const auto group : pb::record_table->Groups)
-		{
-			bool emptyGroup = true;
-			for (int i = 0; i <= 2; i++)
-			{
-				auto bmp = group->GetBitmap(i);
-				if (bmp)
-				{
-					emptyGroup = false;
-					break;
-				}
-			}
-			if (emptyGroup)
-				continue;
-
-			ImGui::Text("Group: %d, name:%s", group->GroupId, group->GroupName.c_str());
-			for (int i = 0; i <= 2; i++)
-			{
-				auto bmp = group->GetBitmap(i);
-				if (!bmp)
-					continue;
-
-				auto type = BitmapTypes[static_cast<uint8_t>(bmp->BitmapType)];
-				ImGui::Text("type:%s, size:%d, resolution: %dx%d, offset:%dx%d", type,
-				            bmp->Resolution,
-				            bmp->Width, bmp->Height, bmp->XPosition, bmp->YPosition);
-			}
-
-			for (int same = 0, i = 0; i <= 2; i++)
-			{
-				auto bmp = group->GetBitmap(i);
-				if (!bmp)
-					continue;
-
-				gdrv::CreatePreview(*bmp);
-				if (bmp->Texture)
-				{
-					if (!same)
-						same = true;
-					else
-						ImGui::SameLine();
-
-					ImGui::Image(bmp->Texture, ImVec2(bmp->Width * scale, bmp->Height * scale),
-					             uv_min, uv_max, tint_col, border_col);
-				}
-			}
-
-			for (int same = 0, i = 0; i <= 2; i++)
-			{
-				auto zMap = group->GetZMap(i);
-				if (!zMap)
-					continue;
-
-				zdrv::CreatePreview(*zMap);
-				if (zMap->Texture)
-				{
-					if (!same)
-						same = true;
-					else
-						ImGui::SameLine();
-					ImGui::Image(zMap->Texture, ImVec2(zMap->Width * scale, zMap->Height * scale),
-					             uv_min, uv_max, tint_col, border_col);
-				}
-			}
-		}
-	}
-	ImGui::End();
+	return (value + divisor - 1) / divisor;
 }
 
-void render::PresentVScreen()
+void render::SetDestination(int x, int y, int width, int height)
 {
-	vscreen->BlitToTexture();
+	DestX = x;
+	DestY = y;
+	DestWidth = width;
+	DestHeight = height;
+	FullDirty = true;
+}
 
-	if (offset_x == 0 && offset_y == 0)
+void render::MarkDirty(int x, int y, int width, int height)
+{
+	if (FullDirty || !vscreen)
+		return;
+
+	RECT rect{x, y, x + width, y + height};
+	if (rect.left < 0)
+		rect.left = 0;
+	if (rect.top < 0)
+		rect.top = 0;
+	if (rect.right > vscreen->Width)
+		rect.right = vscreen->Width;
+	if (rect.bottom > vscreen->Height)
+		rect.bottom = vscreen->Height;
+	if (rect.left >= rect.right || rect.top >= rect.bottom)
+		return;
+
+	// Merge with a rectangle that overlaps or touches this one.
+	for (int i = 0; i < DirtyCount; i++)
 	{
-		SDL_RenderCopy(winmain::Renderer, vscreen->Texture, nullptr, &DestinationRect);
+		auto& dirty = DirtyRects[i];
+		if (rect.left <= dirty.right && dirty.left <= rect.right &&
+			rect.top <= dirty.bottom && dirty.top <= rect.bottom)
+		{
+			dirty.left = std::min(dirty.left, rect.left);
+			dirty.top = std::min(dirty.top, rect.top);
+			dirty.right = std::max(dirty.right, rect.right);
+			dirty.bottom = std::max(dirty.bottom, rect.bottom);
+			return;
+		}
+	}
+
+	if (DirtyCount < MaxDirtyRects)
+	{
+		DirtyRects[DirtyCount++] = rect;
 	}
 	else
 	{
-		auto tableWidthCoef = static_cast<float>(pb::MainTable->Width) / vscreen->Width;
-		auto srcSeparationX = static_cast<int>(round(vscreen->Width * tableWidthCoef));
-		auto srcBoardRect = SDL_Rect
-		{
-			0, 0,
-			srcSeparationX, vscreen->Height
-		};
-		auto srcSidebarRect = SDL_Rect
-		{
-			srcSeparationX, 0,
-			vscreen->Width - srcSeparationX, vscreen->Height
-		};
-
-#if SDL_VERSION_ATLEAST(2, 0, 10)
-		// SDL_RenderCopyF was added in 2.0.10
-		auto dstSeparationX = DestinationRect.w * tableWidthCoef;
-		auto dstBoardRect = SDL_FRect
-		{
-			DestinationRect.x + offset_x * fullscrn::ScaleX,
-			DestinationRect.y + offset_y * fullscrn::ScaleY,
-			dstSeparationX, static_cast<float>(DestinationRect.h)
-		};
-		auto dstSidebarRect = SDL_FRect
-		{
-			DestinationRect.x + dstSeparationX, static_cast<float>(DestinationRect.y),
-			DestinationRect.w - dstSeparationX, static_cast<float>(DestinationRect.h)
-		};
-
-		SDL_RenderCopyF(winmain::Renderer, vscreen->Texture, &srcBoardRect, &dstBoardRect);
-		SDL_RenderCopyF(winmain::Renderer, vscreen->Texture, &srcSidebarRect, &dstSidebarRect);
-#else
-		// SDL_RenderCopy cannot express sub pixel offset.
-		// Vscreen shift is required for that.
-		auto dstSeparationX = static_cast<int>(DestinationRect.w * tableWidthCoef);
-		auto scaledOffX = static_cast<int>(round(offset_x * fullscrn::ScaleX));
-		if (offset_x != 0 && scaledOffX == 0)
-			scaledOffX = Sign(offset_x);
-		auto scaledOffY = static_cast<int>(round(offset_y * fullscrn::ScaleY));
-		if (offset_y != 0 && scaledOffX == 0)
-			scaledOffY = Sign(offset_y);
-
-		auto dstBoardRect = SDL_Rect
-		{
-			DestinationRect.x + scaledOffX, DestinationRect.y + scaledOffY,
-			dstSeparationX, DestinationRect.h
-		};
-		auto dstSidebarRect = SDL_Rect
-		{
-			DestinationRect.x + dstSeparationX, DestinationRect.y,
-			DestinationRect.w - dstSeparationX, DestinationRect.h
-		};
-
-		SDL_RenderCopy(winmain::Renderer, vscreen->Texture, &srcBoardRect, &dstBoardRect);
-		SDL_RenderCopy(winmain::Renderer, vscreen->Texture, &srcSidebarRect, &dstSidebarRect);
-#endif
+		auto& last = DirtyRects[MaxDirtyRects - 1];
+		last.left = std::min(last.left, rect.left);
+		last.top = std::min(last.top, rect.top);
+		last.right = std::max(last.right, rect.right);
+		last.bottom = std::max(last.bottom, rect.bottom);
 	}
+}
 
-	if (options::Options.DebugOverlay)
+bool render::PrepareBackBuffer()
+{
+	if (!vscreen || DestWidth <= 0 || DestHeight <= 0)
+		return false;
+	if (BackDC && BackWidth == DestWidth && BackHeight == DestHeight &&
+		MapSrcWidth == vscreen->Width && MapSrcHeight == vscreen->Height)
+		return true;
+
+	ReleaseBackBuffer();
+
+	// 32-bit top-down DIB: the same pixel layout as ColorRgba.
+	BITMAPINFO bmi{};
+	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth = DestWidth;
+	bmi.bmiHeader.biHeight = -DestHeight;
+	bmi.bmiHeader.biPlanes = 1;
+	bmi.bmiHeader.biBitCount = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	void* bits = nullptr;
+	auto screenDC = GetDC(nullptr);
+	BackBitmap = CreateDIBSection(screenDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+	BackDC = CreateCompatibleDC(screenDC);
+	ReleaseDC(nullptr, screenDC);
+	if (!BackBitmap || !BackDC || !bits)
 	{
-		DebugOverlay::DrawOverlay();
+		ReleaseBackBuffer();
+		return false;
 	}
+
+	BackOldBitmap = static_cast<HBITMAP>(SelectObject(BackDC, BackBitmap));
+	BackPixels = static_cast<ColorRgba*>(bits);
+	BackWidth = DestWidth;
+	BackHeight = DestHeight;
+
+	// Nearest neighbor: destination pixel -> source pixel.
+	MapSrcWidth = vscreen->Width;
+	MapSrcHeight = vscreen->Height;
+	MapX.resize(BackWidth);
+	MapY.resize(BackHeight);
+	for (int x = 0; x < BackWidth; x++)
+		MapX[x] = std::min(x * MapSrcWidth / BackWidth, MapSrcWidth - 1);
+	for (int y = 0; y < BackHeight; y++)
+		MapY[y] = std::min(y * MapSrcHeight / BackHeight, MapSrcHeight - 1);
+
+	FullDirty = true;
+	return true;
+}
+
+void render::ReleaseBackBuffer()
+{
+	if (BackDC)
+	{
+		if (BackOldBitmap)
+			SelectObject(BackDC, BackOldBitmap);
+		DeleteDC(BackDC);
+	}
+	if (BackBitmap)
+		DeleteObject(BackBitmap);
+	BackDC = nullptr;
+	BackBitmap = BackOldBitmap = nullptr;
+	BackPixels = nullptr;
+	BackWidth = BackHeight = MapSrcWidth = MapSrcHeight = 0;
+}
+
+void render::ScaleArea(int dstX0, int dstY0, int dstX1, int dstY1)
+{
+	auto src = vscreen->BmpBufPtr1;
+	auto srcStride = vscreen->Stride;
+	auto count = dstX1 - dstX0;
+
+	if (BackWidth == vscreen->Width && BackHeight == vscreen->Height)
+	{
+		for (int y = dstY0; y < dstY1; y++)
+			std::memcpy(BackPixels + y * BackWidth + dstX0, src + y * srcStride + dstX0, count * sizeof(ColorRgba));
+		return;
+	}
+
+	for (int y = dstY0; y < dstY1; y++)
+	{
+		auto dst = BackPixels + y * BackWidth;
+		if (y > dstY0 && MapY[y] == MapY[y - 1])
+		{
+			// Same source row as the row above.
+			std::memcpy(dst + dstX0, dst - BackWidth + dstX0, count * sizeof(ColorRgba));
+			continue;
+		}
+
+		auto srcRow = src + MapY[y] * srcStride;
+		for (int x = dstX0; x < dstX1; x++)
+			dst[x] = srcRow[MapX[x]];
+	}
+}
+
+// Table nudge: the table part of the vscreen moves by the nudge offset; the
+// side bar does not move.
+void render::ScaleShifted()
+{
+	auto src = vscreen->BmpBufPtr1;
+	auto srcStride = vscreen->Stride;
+
+	auto srcSeparationX = vscreen->Width;
+	if (pb::MainTable && pb::MainTable->Width > 0)
+		srcSeparationX = std::min(pb::MainTable->Width, vscreen->Width);
+	auto dstSeparationX = std::min(CeilDiv(srcSeparationX * BackWidth, vscreen->Width), BackWidth);
+
+	auto offX = static_cast<int>(round(offset_x * fullscrn::ScaleX));
+	if (offset_x != 0 && offX == 0)
+		offX = Sign(offset_x);
+	auto offY = static_cast<int>(round(offset_y * fullscrn::ScaleY));
+	if (offset_y != 0 && offY == 0)
+		offY = Sign(offset_y);
+
+	const ColorRgba black{0, 0, 0, 0};
+	for (int y = 0; y < BackHeight; y++)
+	{
+		auto dst = BackPixels + y * BackWidth;
+		auto srcY = y - offY;
+		if (srcY < 0 || srcY >= BackHeight)
+		{
+			for (int x = 0; x < dstSeparationX; x++)
+				dst[x] = black;
+		}
+		else
+		{
+			auto srcRow = src + MapY[srcY] * srcStride;
+			for (int x = 0; x < dstSeparationX; x++)
+			{
+				auto srcX = x - offX;
+				dst[x] = srcX >= 0 && srcX < dstSeparationX ? srcRow[MapX[srcX]] : black;
+			}
+		}
+
+		auto sideRow = src + MapY[y] * srcStride;
+		for (int x = dstSeparationX; x < BackWidth; x++)
+			dst[x] = sideRow[MapX[x]];
+	}
+}
+
+void render::PresentVScreen(HDC dc)
+{
+	if (!dc || !PrepareBackBuffer())
+		return;
+
+	auto shifted = offset_x != 0 || offset_y != 0;
+	if (shifted || ShiftedLast)
+		FullDirty = true;
+	ShiftedLast = shifted;
+
+	if (FullDirty)
+	{
+		if (shifted)
+			ScaleShifted();
+		else
+			ScaleArea(0, 0, BackWidth, BackHeight);
+		BitBlt(dc, DestX, DestY, BackWidth, BackHeight, BackDC, 0, 0, SRCCOPY);
+	}
+	else
+	{
+		for (int i = 0; i < DirtyCount; i++)
+		{
+			const auto& rect = DirtyRects[i];
+			auto x0 = CeilDiv(rect.left * BackWidth, vscreen->Width);
+			auto x1 = std::min(CeilDiv(rect.right * BackWidth, vscreen->Width), BackWidth);
+			auto y0 = CeilDiv(rect.top * BackHeight, vscreen->Height);
+			auto y1 = std::min(CeilDiv(rect.bottom * BackHeight, vscreen->Height), BackHeight);
+			if (x0 >= x1 || y0 >= y1)
+				continue;
+
+			ScaleArea(x0, y0, x1, y1);
+			BitBlt(dc, DestX + x0, DestY + y0, x1 - x0, y1 - y0, BackDC, x0, y0, SRCCOPY);
+		}
+	}
+	GdiFlush();
+
+	DirtyCount = 0;
+	FullDirty = false;
+}
+
+// WM_PAINT: black borders around the table, then the last frame.
+void render::PaintWindow(HDC dc)
+{
+	RECT client{};
+	GetClientRect(WindowFromDC(dc), &client);
+	auto black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+
+	if (!PrepareBackBuffer())
+	{
+		FillRect(dc, &client, black);
+		return;
+	}
+
+	if (FullDirty)
+	{
+		// The image is not current; make it current first.
+		PresentVScreen(dc);
+	}
+	else
+	{
+		BitBlt(dc, DestX, DestY, BackWidth, BackHeight, BackDC, 0, 0, SRCCOPY);
+		GdiFlush();
+	}
+
+	RECT border;
+	SetRect(&border, client.left, client.top, client.right, DestY);
+	FillRect(dc, &border, black);
+	SetRect(&border, client.left, DestY + BackHeight, client.right, client.bottom);
+	FillRect(dc, &border, black);
+	SetRect(&border, client.left, DestY, DestX, DestY + BackHeight);
+	FillRect(dc, &border, black);
+	SetRect(&border, DestX + BackWidth, DestY, client.right, DestY + BackHeight);
+	FillRect(dc, &border, black);
 }

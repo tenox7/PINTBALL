@@ -3,8 +3,11 @@
 
 #include "options.h"
 #include "pb.h"
+#include "resource.h"
 #include "score.h"
 #include "translations.h"
+#include "winmain.h"
+#include "wintext.h"
 
 bool high_score::dlg_enter_name;
 bool high_score::ShowDialog = false;
@@ -117,122 +120,148 @@ void high_score::show_and_set_high_score_dialog(high_score_entry score)
 	ShowDialog = true;
 }
 
-void high_score::RenderHighScoreDialog()
+// Shows the high score dialog, if show_high_score_dialog asked for it. A new
+// score gets an edit box for the name of the player. Returns true when the
+// dialog was shown.
+bool high_score::RenderHighScoreDialog()
 {
-	if (ShowDialog == true)
-	{
-		ShowDialog = false;
-		if (!ImGui::IsPopupOpen(pb::get_rc_string(Msg::HIGHSCORES_Caption)))
-		{
-			dlg_enter_name = false;
-			while (!ScoreQueue.empty())
-			{
-				DlgData = ScoreQueue.back();
-				ScoreQueue.pop_back();
-				if (DlgData.Position < 0 || DlgData.Position > 4)
-				{
-					DlgData.Position = get_score_position(DlgData.Entry.Score);
-				}
+	if (!ShowDialog)
+		return false;
+	ShowDialog = false;
 
-				if (DlgData.Position != -1)
-				{
-					dlg_enter_name = true;
-					break;
-				}
+	do
+	{
+		dlg_enter_name = false;
+		while (!ScoreQueue.empty())
+		{
+			DlgData = ScoreQueue.back();
+			ScoreQueue.pop_back();
+			if (DlgData.Position < 0 || DlgData.Position > 4)
+			{
+				DlgData.Position = get_score_position(DlgData.Entry.Score);
 			}
 
-			ImGui::OpenPopup(pb::get_rc_string(Msg::HIGHSCORES_Caption));
+			if (DlgData.Position != -1)
+			{
+				dlg_enter_name = true;
+				break;
+			}
 		}
+
+		DialogBoxParamW(winmain::Instance, MAKEINTRESOURCEW(IDD_HIGHSCORES), winmain::MainWindow, DialogProc, 0);
 	}
+	// Show the dialog again for the next score in the queue
+	while (!ScoreQueue.empty());
 
-	bool unused_open = true, textBoxSubmit = false;
-	if (ImGui::BeginPopupModal(pb::get_rc_string(Msg::HIGHSCORES_Caption), &unused_open, ImGuiWindowFlags_AlwaysAutoResize))
+	return true;
+}
+
+// The table, with the new score at its position.
+void high_score::FillRows(HWND dialog)
+{
+	char buf[36];
+	for (int offset = 0, row = 0; row < 5; row++)
 	{
-		if (ImGui::BeginTable("table1", 3, ImGuiTableFlags_Borders))
+		snprintf(buf, sizeof buf, "%d", row + 1);
+		wintext::SetItemText(dialog, IDC_HS_RANK0 + row, buf);
+
+		int score;
+		if (dlg_enter_name && DlgData.Position == row)
 		{
-			char buf[36];
-			ImGui::TableSetupColumn(pb::get_rc_string(Msg::HIGHSCORES_Rank));
-			ImGui::TableSetupColumn(pb::get_rc_string(Msg::HIGHSCORES_Name));
-			ImGui::TableSetupColumn(pb::get_rc_string(Msg::HIGHSCORES_Score));
-			ImGui::TableHeadersRow();
-
-			for (int offset = 0, row = 0; row < 5; row++)
-			{
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				snprintf(buf, sizeof buf, "%d", row + 1);
-				ImGui::TextUnformatted(buf);
-
-				auto currentRow = &highscore_table[row + offset];
-				auto score = currentRow->Score;
-				ImGui::TableNextColumn();
-				if (dlg_enter_name && DlgData.Position == row)
-				{
-					offset = -1;
-					score = DlgData.Entry.Score;
-					ImGui::PushItemWidth(200);
-
-					if (ImGui::IsWindowAppearing())
-					{
-						ImGui::SetKeyboardFocusHere(0);
-					}
-					if (ImGui::InputText("", DlgData.Entry.Name, IM_ARRAYSIZE(DlgData.Entry.Name),
-						ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
-					{
-						textBoxSubmit = true;
-					}
-				}
-				else
-				{
-					ImGui::TextUnformatted(currentRow->Name);
-				}
-
-				ImGui::TableNextColumn();
-				score::string_format(score, buf);
-				ImGui::TextUnformatted(buf);
-			}
-			ImGui::EndTable();
+			offset = -1;
+			score = DlgData.Entry.Score;
+			wintext::SetItemText(dialog, IDC_HS_NAME0 + row, "");
+		}
+		else
+		{
+			auto currentRow = &highscore_table[row + offset];
+			score = currentRow->Score;
+			wintext::SetItemText(dialog, IDC_HS_NAME0 + row, currentRow->Name);
 		}
 
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericOk)) || textBoxSubmit)
+		score::string_format(score, buf);
+		wintext::SetItemText(dialog, IDC_HS_SCORE0 + row, buf);
+	}
+}
+
+BOOL CALLBACK high_score::DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
+	{
+	case WM_INITDIALOG:
 		{
+			wintext::SetText(dialog, pb::get_rc_string(Msg::HIGHSCORES_Caption));
+			wintext::SetItemText(dialog, IDC_HS_RANK_HEADER, pb::get_rc_string(Msg::HIGHSCORES_Rank));
+			wintext::SetItemText(dialog, IDC_HS_NAME_HEADER, pb::get_rc_string(Msg::HIGHSCORES_Name));
+			wintext::SetItemText(dialog, IDC_HS_SCORE_HEADER, pb::get_rc_string(Msg::HIGHSCORES_Score));
+			wintext::SetItemText(dialog, IDOK, pb::get_rc_string(Msg::GenericOk));
+			wintext::SetItemText(dialog, IDCANCEL, pb::get_rc_string(Msg::GenericCancel));
+			wintext::SetItemText(dialog, IDC_HS_CLEAR, pb::get_rc_string(Msg::HIGHSCORES_Clear));
+			FillRows(dialog);
+
+			if (!dlg_enter_name)
+				return TRUE;
+
+			// Put the edit box on the name of the new score.
+			auto nameText = GetDlgItem(dialog, IDC_HS_NAME0 + DlgData.Position);
+			auto edit = GetDlgItem(dialog, IDC_HS_EDIT);
+			RECT nameRect, editRect;
+			GetWindowRect(nameText, &nameRect);
+			GetWindowRect(edit, &editRect);
+			MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&nameRect), 2);
+			auto editHeight = editRect.bottom - editRect.top;
+			auto top = nameRect.top - (editHeight - (nameRect.bottom - nameRect.top)) / 2;
+			SetWindowPos(edit, nullptr, nameRect.left - 2, top, nameRect.right - nameRect.left + 2, editHeight,
+			             SWP_NOZORDER | SWP_NOACTIVATE);
+			ShowWindow(nameText, SW_HIDE);
+
+			DlgData.Entry.Name[sizeof DlgData.Entry.Name - 1] = 0;
+			wintext::SetText(edit, DlgData.Entry.Name);
+			SendMessageW(edit, EM_LIMITTEXT, sizeof DlgData.Entry.Name - 1, 0);
+			ShowWindow(edit, SW_SHOW);
+			SendMessageW(edit, EM_SETSEL, 0, -1);
+			SetFocus(edit);
+			return FALSE;
+		}
+	case WM_COMMAND:
+		switch (LOWORD(wParam))
+		{
+		case IDOK:
 			if (dlg_enter_name)
 			{
+				// The name is UTF-8 in 31 bytes: cut it at the start of a character.
+				auto name = wintext::GetText(GetDlgItem(dialog, IDC_HS_EDIT));
+				size_t length = name.size();
+				if (length > sizeof DlgData.Entry.Name - 1)
+				{
+					length = sizeof DlgData.Entry.Name - 1;
+					while (length > 0 && (static_cast<unsigned char>(name[length]) & 0xC0) == 0x80)
+						length--;
+				}
+				memcpy(DlgData.Entry.Name, name.c_str(), length);
+				DlgData.Entry.Name[length] = 0;
 				place_new_score_into(DlgData);
 			}
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::SameLine();
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericCancel)))
-			ImGui::CloseCurrentPopup();
-
-		ImGui::SameLine();
-		if (ImGui::Button(pb::get_rc_string(Msg::HIGHSCORES_Clear)))
-			ImGui::OpenPopup("Confirm");
-		if (ImGui::BeginPopupModal("Confirm", nullptr, ImGuiWindowFlags_MenuBar))
-		{
-			ImGui::TextUnformatted(pb::get_rc_string(Msg::STRING141));
-			if (ImGui::Button(pb::get_rc_string(Msg::GenericOk), ImVec2(120, 0)))
+			EndDialog(dialog, IDOK);
+			return TRUE;
+		case IDCANCEL:
+			EndDialog(dialog, IDCANCEL);
+			return TRUE;
+		case IDC_HS_CLEAR:
+			if (MessageBoxW(dialog, wintext::ToWide(pb::get_rc_string(Msg::STRING141)).data(),
+			                wintext::ToWide(pb::get_rc_string(Msg::HIGHSCORES_Caption)).data(),
+			                MB_OKCANCEL | MB_ICONQUESTION) == IDOK)
 			{
 				clear_table();
-				ImGui::CloseCurrentPopup();
+				FillRows(dialog);
 			}
-			ImGui::SetItemDefaultFocus();
-			ImGui::SameLine();
-			if (ImGui::Button(pb::get_rc_string(Msg::GenericCancel), ImVec2(120, 0)))
-			{
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
+			return TRUE;
+		default:
+			break;
 		}
-
-		ImGui::EndPopup();
-
-		// Reenter dialog for the next score in the queue
-		if (!ImGui::IsPopupOpen(pb::get_rc_string(Msg::HIGHSCORES_Caption)) && !ScoreQueue.empty())
-		{
-			ShowDialog = true;
-		}
+		break;
+	default:
+		break;
 	}
+	return FALSE;
 }

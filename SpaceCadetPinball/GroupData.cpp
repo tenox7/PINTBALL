@@ -2,10 +2,11 @@
 
 #include "GroupData.h"
 
-#include "EmbeddedData.h"
 #include "fullscrn.h"
 #include "gdrv.h"
 #include "pb.h"
+#include "resource.h"
+#include "winmain.h"
 #include "zdrv.h"
 
 
@@ -287,11 +288,13 @@ void DatFile::Finalize()
 		int groupIndex = record_labeled("pbmsg_ft");
 		assertm(groupIndex < 0, "DatFile: pbmsg_ft is already in .dat");
 
-		// Load 3DPB font into dat to simplify pipeline
-		auto rcData = reinterpret_cast<MsgFont*>(ImFontAtlas::DecompressCompressedBase85Data(
-			EmbeddedData::PB_MSGFT_bin_compressed_data_base85));
-		AddMsgFont(rcData, "pbmsg_ft");
-		IM_FREE(rcData);
+		// Load 3DPB font into dat to simplify pipeline.
+		// The font is PB_MSGFT.bin, an RCDATA resource of the program.
+		auto resource = FindResourceW(winmain::Instance, MAKEINTRESOURCEW(IDR_PB_MSGFT), MAKEINTRESOURCEW(10));
+		auto resourceData = resource ? LoadResource(winmain::Instance, resource) : nullptr;
+		auto rcData = resourceData ? static_cast<MsgFont*>(LockResource(resourceData)) : nullptr;
+		if (rcData && SizeofResource(winmain::Instance, resource) >= sizeof(MsgFont))
+			AddMsgFont(rcData, "pbmsg_ft");
 
 		// PINBALL2.MID is an alternative font provided in 3DPB data
 		// Scaled down because it is too large for top text box

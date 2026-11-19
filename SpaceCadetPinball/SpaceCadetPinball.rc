@@ -1,1 +1,56 @@
-ICON_1 ICON "Icon_1.ico"
+#include <windows.h>
+#include "resource.h"
+
+// Windows NT 4.0 can not use PNG or 32-bit icon images, so this icon has only
+// the 4-bit and 8-bit images of Icon_1.ico.
+ICON_1 ICON "Icon_pint.ico"
+
+IDR_PB_MSGFT RCDATA "PB_MSGFT.bin"
+
+// The texts come from the translations at run time.
+IDD_HIGHSCORES DIALOG 0, 0, 220, 128
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "High Scores"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Rank", IDC_HS_RANK_HEADER, 10, 8, 28, 9
+    LTEXT           "Name", IDC_HS_NAME_HEADER, 42, 8, 100, 9
+    RTEXT           "Score", IDC_HS_SCORE_HEADER, 146, 8, 64, 9
+    LTEXT           "1", IDC_HS_RANK0, 10, 24, 28, 9
+    LTEXT           "", IDC_HS_NAME0, 42, 24, 100, 9, SS_NOPREFIX
+    RTEXT           "", IDC_HS_SCORE0, 146, 24, 64, 9
+    LTEXT           "2", IDC_HS_RANK0 + 1, 10, 38, 28, 9
+    LTEXT           "", IDC_HS_NAME0 + 1, 42, 38, 100, 9, SS_NOPREFIX
+    RTEXT           "", IDC_HS_SCORE0 + 1, 146, 38, 64, 9
+    LTEXT           "3", IDC_HS_RANK0 + 2, 10, 52, 28, 9
+    LTEXT           "", IDC_HS_NAME0 + 2, 42, 52, 100, 9, SS_NOPREFIX
+    RTEXT           "", IDC_HS_SCORE0 + 2, 146, 52, 64, 9
+    LTEXT           "4", IDC_HS_RANK0 + 3, 10, 66, 28, 9
+    LTEXT           "", IDC_HS_NAME0 + 3, 42, 66, 100, 9, SS_NOPREFIX
+    RTEXT           "", IDC_HS_SCORE0 + 3, 146, 66, 64, 9
+    LTEXT           "5", IDC_HS_RANK0 + 4, 10, 80, 28, 9
+    LTEXT           "", IDC_HS_NAME0 + 4, 42, 80, 100, 9, SS_NOPREFIX
+    RTEXT           "", IDC_HS_SCORE0 + 4, 146, 80, 64, 9
+    EDITTEXT        IDC_HS_EDIT, 40, 22, 102, 12, ES_AUTOHSCROLL | NOT WS_VISIBLE
+    DEFPUSHBUTTON   "OK", IDOK, 18, 104, 54, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 83, 104, 54, 14
+    PUSHBUTTON      "Clear", IDC_HS_CLEAR, 148, 104, 54, 14
+END
+
+// The rows of buttons (14 rows from y 71, 12 units apart) are made at run
+// time; see options::ControlDialogProc.
+IDD_CONTROLS DIALOG 0, 0, 330, 264
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Player Controls"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_CTL_HELP, 8, 6, 314, 40, SS_NOPREFIX
+    LTEXT           "", IDC_CTL_GROUP, 8, 48, 314, 9, SS_NOPREFIX
+    CTEXT           "Control", IDC_CTL_HEADER0, 8, 60, 92, 9
+    CTEXT           "Binding 1", IDC_CTL_HEADER1, 104, 60, 70, 9
+    CTEXT           "Binding 2", IDC_CTL_HEADER2, 178, 60, 70, 9
+    CTEXT           "Binding 3", IDC_CTL_HEADER3, 252, 60, 70, 9
+    DEFPUSHBUTTON   "OK", IDOK, 8, 244, 60, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 74, 244, 60, 14
+    PUSHBUTTON      "Default", IDC_CTL_DEFAULT, 262, 244, 60, 14
+END

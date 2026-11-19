@@ -5,17 +5,22 @@
 #include "midi.h"
 #include "pb.h"
 #include "render.h"
+#include "resource.h"
 #include "Sound.h"
 #include "winmain.h"
+#include "wintext.h"
 #include "translations.h"
 
 constexpr int options::MaxUps, options::MaxFps, options::MinUps, options::MinFps, options::DefUps, options::DefFps;
 constexpr int options::MaxSoundChannels, options::MinSoundChannels, options::DefSoundChannels;
 constexpr int options::MaxVolume, options::MinVolume, options::DefVolume;
 
-std::unordered_map<std::string, std::string> options::settings{};
+std::vector<std::pair<std::string, std::string>> options::settings{};
+std::string options::IniPath{};
 bool options::ShowDialog = false;
-GameInput* options::ControlWaitingForInput = nullptr;
+int options::WaitingRow = -1, options::WaitingColumn = -1, options::SwallowKey = 0;
+bool options::SwallowMouseUp = false;
+WNDPROC options::ButtonProc = nullptr;
 std::vector<OptionBase*> options::AllOptions{};
 
 optionsStruct options::Options
@@ -24,100 +29,100 @@ optionsStruct options::Options
 		{
 			"Left Flipper key",
 			Msg::KEYMAPPER_FlipperL,
-			{InputTypes::Keyboard, SDLK_z},
-			{InputTypes::Mouse, SDL_BUTTON_LEFT},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_LEFTSHOULDER}
+			{InputTypes::Keyboard, 'Z'},
+			{InputTypes::Mouse, MouseButtonLeft},
+			{}
 		},
 		{
 			"Right Flipper key",
 			Msg::KEYMAPPER_FlipperR,
-			{InputTypes::Keyboard, SDLK_SLASH},
-			{InputTypes::Mouse,SDL_BUTTON_RIGHT},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER}
+			{InputTypes::Keyboard, VK_OEM_2},
+			{InputTypes::Mouse, MouseButtonRight},
+			{}
 		},
 		{
 			"Plunger key",
 			Msg::KEYMAPPER_Plunger,
-			{InputTypes::Keyboard, SDLK_SPACE},
-			{InputTypes::Mouse,SDL_BUTTON_MIDDLE},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_A}
+			{InputTypes::Keyboard, VK_SPACE},
+			{InputTypes::Mouse, MouseButtonMiddle},
+			{}
 		},
 		{
 			"Left Table Bump key",
 			Msg::KEYMAPPER_BumpLeft,
-			{InputTypes::Keyboard, SDLK_x},
-			{InputTypes::Mouse,SDL_BUTTON_X1},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_DPAD_LEFT}
+			{InputTypes::Keyboard, 'X'},
+			{},
+			{}
 		},
 		{
 			"Right Table Bump key",
 			Msg::KEYMAPPER_BumpRight,
-			{InputTypes::Keyboard, SDLK_PERIOD},
-			{InputTypes::Mouse,SDL_BUTTON_X2},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_DPAD_RIGHT}
+			{InputTypes::Keyboard, VK_OEM_PERIOD},
+			{},
+			{}
 		},
 		{
 			"Bottom Table Bump key",
 			Msg::KEYMAPPER_BumpBottom,
-			{InputTypes::Keyboard, SDLK_UP},
-			{InputTypes::Mouse,SDL_BUTTON_X2 + 1},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_DPAD_UP}
+			{InputTypes::Keyboard, VK_UP},
+			{},
+			{}
 		},
 		{
 			"New Game",
 			Msg::Menu1_New_Game,
-			{InputTypes::Keyboard, SDLK_F2},
+			{InputTypes::Keyboard, VK_F2},
 			{},
 			{}
 		},
 		{
 			"Toggle Pause",
 			Msg::Menu1_Pause_Resume_Game,
-			{InputTypes::Keyboard, SDLK_F3},
+			{InputTypes::Keyboard, VK_F3},
 			{},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_START}
+			{}
 		},
 		{
 			"Toggle FullScreen",
 			Msg::Menu1_Full_Screen,
-			{InputTypes::Keyboard, SDLK_F4},
+			{InputTypes::Keyboard, VK_F4},
 			{},
 			{}
 		},
 		{
 			"Toggle Sounds",
 			Msg::Menu1_Sounds,
-			{InputTypes::Keyboard, SDLK_F5},
+			{InputTypes::Keyboard, VK_F5},
 			{},
 			{}
 		},
 		{
 			"Toggle Music",
 			Msg::Menu1_Music,
-			{InputTypes::Keyboard, SDLK_F6},
+			{InputTypes::Keyboard, VK_F6},
 			{},
 			{}
 		},
 		{
 			"Show Control Dialog",
 			Msg::Menu1_Player_Controls,
-			{InputTypes::Keyboard, SDLK_F8},
+			{InputTypes::Keyboard, VK_F8},
 			{},
 			{}
 		},
 		{
 			"Toggle Menu Display",
 			Msg::Menu1_ToggleShowMenu,
-			{InputTypes::Keyboard, SDLK_F9},
+			{InputTypes::Keyboard, VK_F9},
 			{},
 			{}
 		},
 		{
 			"Exit",
 			Msg::Menu1_Exit,
-			{InputTypes::Keyboard, SDLK_ESCAPE},
+			{InputTypes::Keyboard, VK_ESCAPE},
 			{},
-			{InputTypes::GameController, SDL_CONTROLLER_BUTTON_BACK}
+			{}
 		},
 	},
 	{"Sounds", true},
@@ -125,9 +130,7 @@ optionsStruct options::Options
 	{"FullScreen", false},
 	{"Players", 1},
 	{"Screen Resolution", -1},
-	{"UI Scale", 1.0f},
 	{"Uniform scaling", true},
-	{"Linear Filtering", true},
 	{"Frames Per Second", DefFps},
 	{"Updates Per Second", DefUps},
 	{"ShowMenu", true},
@@ -139,38 +142,21 @@ optionsStruct options::Options
 	{"Sound Volume", DefVolume},
 	{"Music Volume", DefVolume},
 	{"Stereo Sound Effects", false},
-	{"Debug Overlay", false},
-	{"Debug Overlay Grid", true},
-	{"Debug Overlay All Edges", true},
-	{"Debug Overlay Ball Position", true},
-	{"Debug Overlay Ball Edges", true},
-	{"Debug Overlay Collision Mask", true},
-	{"Debug Overlay Sprites", true},
-	{"Debug Overlay Sounds", true},
-	{"Debug Overlay Ball Depth Grid", true},
-	{"Debug Overlay AABB", true},
-	{"FontFileName", ""},
 	{"Language", translations::GetCurrentLanguage()->ShortName},
 	{"Hide Cursor", false},
 };
 
-void options::InitPrimary()
-{
-	auto imContext = ImGui::GetCurrentContext();
-	ImGuiSettingsHandler ini_handler;
-	ini_handler.TypeName = "Pinball";
-	ini_handler.TypeHash = ImHashStr(ini_handler.TypeName);
-	ini_handler.ReadOpenFn = MyUserData_ReadOpen;
-	ini_handler.ReadLineFn = MyUserData_ReadLine;
-	ini_handler.WriteAllFn = MyUserData_WriteAll;
-	imContext->SettingsHandlers.push_back(ini_handler);
+// The rows of the player controls dialog, in dialog units. The static
+// controls above them are in IDD_CONTROLS of SpaceCadetPinball.rc.
+static constexpr int ControlRowTop = 71, ControlRowStep = 12, ControlRowHeight = 11;
+static constexpr int ControlNameX = 8, ControlNameWidth = 92;
+static constexpr int ControlInputX = 104, ControlInputStep = 74, ControlInputWidth = 70;
+static constexpr int ControlCount = static_cast<int>(GameBindings::Max);
 
-	// Settings are loaded from disk on the first frame
-	if (!imContext->SettingsLoaded)
-	{
-		ImGui::LoadIniSettingsFromDisk(imContext->IO.IniFilename);
-		imContext->SettingsLoaded = true;
-	}
+void options::InitPrimary(const std::string& iniPath)
+{
+	IniPath = iniPath;
+	LoadSettings();
 
 	for (const auto opt : AllOptions)
 		opt->Load();
@@ -185,6 +171,8 @@ void options::InitSecondary()
 	fullscrn::SetResolution(Options.Resolution == -1 ? maxRes : Options.Resolution);
 }
 
+// Saves the options in the settings, then writes the INI file. Call it after
+// pb::uninit, which writes the high scores to the settings.
 void options::uninit()
 {
 	Options.Language.V = translations::GetCurrentLanguage()->ShortName;
@@ -192,8 +180,51 @@ void options::uninit()
 	{
 		opt->Save();
 	}
+	SaveSettings();
 }
 
+void options::LoadSettings()
+{
+	settings.clear();
+	if (IniPath.empty())
+		return;
+
+	// The section comes as "key=value" texts that end with a zero, and one
+	// more zero at the end.
+	std::vector<char> buffer;
+	for (DWORD size = 16384; ; size *= 2)
+	{
+		buffer.clear();
+		buffer.resize(size);
+		auto length = GetPrivateProfileSectionA("Settings", buffer.data(), size, IniPath.c_str());
+		if (length < size - 2 || size >= 1024 * 1024)
+			break;
+	}
+
+	for (auto entry = buffer.data(); *entry; entry += strlen(entry) + 1)
+	{
+		auto separator = strchr(entry, '=');
+		if (separator && separator != entry)
+			settings.push_back({std::string(entry, separator), std::string(separator + 1)});
+	}
+}
+
+void options::SaveSettings()
+{
+	if (IniPath.empty())
+		return;
+
+	std::string section;
+	for (const auto& setting : settings)
+	{
+		section += setting.first;
+		section += '=';
+		section += setting.second;
+		section += '\0';
+	}
+	section += '\0';
+	WritePrivateProfileSectionA("Settings", section.c_str(), IniPath.c_str());
+}
 
 int options::get_int(LPCSTR lpValueName, int defaultValue)
 {
@@ -260,7 +291,7 @@ void options::toggle(Menu1 uIDCheckItem)
 		return;
 	case Menu1::Show_Menu:
 		Options.ShowMenu ^= true;
-		fullscrn::window_size_changed();
+		winmain::UpdateMenuVisibility();
 		return;
 	case Menu1::Full_Screen:
 		Options.FullScreen ^= true;
@@ -300,10 +331,6 @@ void options::toggle(Menu1 uIDCheckItem)
 		Options.UniformScaling ^= true;
 		fullscrn::window_size_changed();
 		break;
-	case Menu1::WindowLinearFilter:
-		Options.LinearFiltering ^= true;
-		render::recreate_screen_texture();
-		break;
 	case Menu1::Prefer3DPBGameData:
 		Options.Prefer3DPBGameData ^= true;
 		winmain::Restart();
@@ -317,126 +344,267 @@ void options::toggle(Menu1 uIDCheckItem)
 	}
 }
 
+// The controls dialog reads its keys itself; the game window does not wait
+// for input.
 void options::InputDown(GameInput input)
 {
-	if (ControlWaitingForInput)
-	{
-		*ControlWaitingForInput = input;
-		ControlWaitingForInput = nullptr;
-	}
 }
 
 void options::ShowControlDialog()
 {
+	ShowDialog = true;
+}
+
+// Shows the player controls dialog, if ShowControlDialog asked for it.
+// Returns true when the dialog was shown.
+bool options::RenderControlDialog()
+{
 	if (!ShowDialog)
+		return false;
+	ShowDialog = false;
+
+	// Save the current controls in the settings: Cancel loads them again.
+	for (const auto& control : Options.Key)
 	{
-		ControlWaitingForInput = nullptr;
-		ShowDialog = true;
-		// Save previous controls in KVP storage.
-		for (const auto& control : Options.Key)
+		control.Save();
+	}
+
+	WaitingRow = WaitingColumn = -1;
+	SwallowKey = 0;
+	SwallowMouseUp = false;
+	DialogBoxParamW(winmain::Instance, MAKEINTRESOURCEW(IDD_CONTROLS), winmain::MainWindow, ControlDialogProc, 0);
+	WaitingRow = WaitingColumn = -1;
+
+	// The menu shows the shortcut keys.
+	winmain::UpdateMenu();
+	return true;
+}
+
+void options::UpdateControlTexts(HWND dialog)
+{
+	for (int row = 0; row < ControlCount; row++)
+	{
+		const auto& option = Options.Key[row];
+		wintext::SetItemText(dialog, IDC_CTL_ROW0 + row, pb::get_rc_string(option.Description));
+		for (int column = 0; column < 3; column++)
 		{
-			control.Save();
+			auto id = IDC_CTL_INPUT0 + row * 3 + column;
+			if (row == WaitingRow && column == WaitingColumn)
+				wintext::SetItemText(dialog, id, "Press the key");
+			else
+				wintext::SetItemText(dialog, id, option.Inputs[column].GetFullInputDescription().c_str());
 		}
 	}
 }
 
-void options::RenderControlDialog()
+// Stops the wait for a key. With an input, the input goes into the binding.
+void options::EndWaiting(HWND dialog, const GameInput* input)
 {
-	if (!ShowDialog)
+	if (WaitingRow < 0)
 		return;
 
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2{550, 550});
-	if (ImGui::Begin(pb::get_rc_string(Msg::KEYMAPPER_Caption), &ShowDialog))
+	auto row = WaitingRow, column = WaitingColumn;
+	WaitingRow = WaitingColumn = -1;
+	if (input)
+		Options.Key[row].Inputs[column] = *input;
+	UpdateControlTexts(dialog);
+}
+
+BOOL CALLBACK options::ControlDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
 	{
-		if (ImGui::TreeNode(pb::get_rc_string(Msg::KEYMAPPER_Groupbox2)))
+	case WM_INITDIALOG:
 		{
-			ImGui::TextWrapped("%s", pb::get_rc_string(Msg::KEYMAPPER_Help1));
-			ImGui::TextWrapped("%s", pb::get_rc_string(Msg::KEYMAPPER_Help2));
-			ImGui::TreePop();
-		}
+			wintext::SetText(dialog, pb::get_rc_string(Msg::KEYMAPPER_Caption));
+			std::string help = pb::get_rc_string(Msg::KEYMAPPER_Help1);
+			help += "\n";
+			help += pb::get_rc_string(Msg::KEYMAPPER_Help2);
+			wintext::SetItemText(dialog, IDC_CTL_HELP, help.c_str());
+			wintext::SetItemText(dialog, IDC_CTL_GROUP, pb::get_rc_string(Msg::KEYMAPPER_Groupbox1));
+			wintext::SetItemText(dialog, IDOK, pb::get_rc_string(Msg::GenericOk));
+			wintext::SetItemText(dialog, IDCANCEL, pb::get_rc_string(Msg::GenericCancel));
+			wintext::SetItemText(dialog, IDC_CTL_DEFAULT, pb::get_rc_string(Msg::KEYMAPPER_Default));
 
-		ImGui::Spacing();
-		ImGui::TextUnformatted(pb::get_rc_string(Msg::KEYMAPPER_Groupbox1));
-
-		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2{5, 10});
-		if (ImGui::BeginTable("Controls", 4,
-		                      ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_Borders |
-		                      ImGuiTableFlags_SizingStretchSame))
-		{
-			ImGui::TableSetupColumn("Control");
-			ImGui::TableSetupColumn("Binding 1");
-			ImGui::TableSetupColumn("Binding 2");
-			ImGui::TableSetupColumn("Binding 3");
-			ImGui::TableHeadersRow();
-
-			int rowHash = 0;
-			for (auto& option : Options.Key)
+			// One row for each control: a button with the name of the control,
+			// which clears the row, and three buttons for the bindings.
+			auto font = reinterpret_cast<HFONT>(SendMessageW(dialog, WM_GETFONT, 0, 0));
+			for (int row = 0; row < ControlCount; row++)
 			{
-				ImGui::TableNextColumn();
-				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.5, 0, 0, 1});
-				if (ImGui::Button(pb::get_rc_string(option.Description), ImVec2(-1, 0)))
+				for (int column = -1; column < 3; column++)
 				{
-					for (auto& input : option.Inputs)
-						input = {};
-				}
-				ImGui::PopStyleColor(1);
+					RECT rect;
+					rect.left = column < 0 ? ControlNameX : ControlInputX + column * ControlInputStep;
+					rect.top = ControlRowTop + row * ControlRowStep;
+					rect.right = rect.left + (column < 0 ? ControlNameWidth : ControlInputWidth);
+					rect.bottom = rect.top + ControlRowHeight;
+					MapDialogRect(dialog, &rect);
 
-				for (auto& input : option.Inputs)
-				{
-					ImGui::TableNextColumn();
-					if (ControlWaitingForInput == &input)
+					auto id = column < 0 ? IDC_CTL_ROW0 + row : IDC_CTL_INPUT0 + row * 3 + column;
+					auto button = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+					                              rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+					                              dialog, reinterpret_cast<HMENU>(static_cast<size_t>(id)),
+					                              winmain::Instance, nullptr);
+					if (!button)
+						continue;
+					SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+					if (column >= 0)
 					{
-						if (ImGui::Button("Press the key", ImVec2(-1, 0)))
-						{
-							ControlWaitingForInput = &input;
-						}
-					}
-					else
-					{
-						auto inputDescription = input.GetFullInputDescription();
-						if (ImGui::Button((inputDescription + "##" + std::to_string(rowHash++)).c_str(),
-						                  ImVec2(-1, 0)))
-						{
-							ControlWaitingForInput = &input;
-						}
+						auto oldProc = reinterpret_cast<WNDPROC>(SetWindowLongW(
+							button, GWL_WNDPROC, reinterpret_cast<LONG>(BindingButtonProc)));
+						if (!ButtonProc)
+							ButtonProc = oldProc;
 					}
 				}
 			}
-			ImGui::EndTable();
-		}
-		ImGui::PopStyleVar();
-		ImGui::Spacing();
 
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericOk)))
-		{
-			ShowDialog = false;
-		}
+			// OK, Cancel and Default come after the rows in the tab order.
+			for (auto id : {IDOK, IDCANCEL, IDC_CTL_DEFAULT})
+				SetWindowPos(GetDlgItem(dialog, id), HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
-		ImGui::SameLine();
-		if (ImGui::Button(pb::get_rc_string(Msg::GenericCancel)))
+			UpdateControlTexts(dialog);
+			return TRUE;
+		}
+	case WM_COMMAND:
 		{
-			for (auto& control : Options.Key)
+			if (HIWORD(wParam) != BN_CLICKED)
+				break;
+
+			int id = LOWORD(wParam);
+			if (id >= IDC_CTL_INPUT0 && id < IDC_CTL_INPUT0 + ControlCount * 3)
 			{
-				control.Load();
+				// Wait for a key, or a mouse button on this button.
+				EndWaiting(dialog, nullptr);
+				WaitingRow = (id - IDC_CTL_INPUT0) / 3;
+				WaitingColumn = (id - IDC_CTL_INPUT0) % 3;
+				SetFocus(GetDlgItem(dialog, id));
+				UpdateControlTexts(dialog);
+				return TRUE;
 			}
-			ShowDialog = false;
-		}
-
-		ImGui::SameLine();
-		if (ImGui::Button(pb::get_rc_string(Msg::KEYMAPPER_Default)))
-		{
-			for (auto& control : Options.Key)
+			if (id >= IDC_CTL_ROW0 && id < IDC_CTL_ROW0 + ControlCount)
 			{
-				control.Reset();
+				EndWaiting(dialog, nullptr);
+				for (auto& input : Options.Key[id - IDC_CTL_ROW0].Inputs)
+					input = {};
+				UpdateControlTexts(dialog);
+				return TRUE;
 			}
-			ControlWaitingForInput = nullptr;
+
+			switch (id)
+			{
+			case IDOK:
+				EndWaiting(dialog, nullptr);
+				EndDialog(dialog, IDOK);
+				return TRUE;
+			case IDCANCEL:
+				EndWaiting(dialog, nullptr);
+				for (auto& control : Options.Key)
+				{
+					control.Load();
+				}
+				EndDialog(dialog, IDCANCEL);
+				return TRUE;
+			case IDC_CTL_DEFAULT:
+				EndWaiting(dialog, nullptr);
+				for (auto& control : Options.Key)
+				{
+					control.Reset();
+				}
+				UpdateControlTexts(dialog);
+				return TRUE;
+			default:
+				break;
+			}
+			break;
 		}
+	default:
+		break;
 	}
-	ImGui::End();
-	ImGui::PopStyleVar();
+	return FALSE;
+}
 
-	if (!ShowDialog)
-		ControlWaitingForInput = nullptr;
+// The binding buttons. While a button waits, it takes all keys (also Tab,
+// Enter and Esc) and the mouse buttons, and the key goes into the binding.
+LRESULT CALLBACK options::BindingButtonProc(HWND button, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	auto index = GetDlgCtrlID(button) - IDC_CTL_INPUT0;
+	auto waiting = WaitingRow >= 0 && index == WaitingRow * 3 + WaitingColumn;
+	switch (message)
+	{
+	case WM_GETDLGCODE:
+		if (waiting || SwallowKey)
+			return DLGC_WANTALLKEYS;
+		break;
+	case WM_KEYDOWN:
+	case WM_SYSKEYDOWN:
+		if (waiting)
+		{
+			// Bit 30: the key was down before (auto-repeat).
+			if (!(lParam & (1 << 30)))
+			{
+				GameInput input{InputTypes::Keyboard, static_cast<int>(wParam)};
+				SwallowKey = static_cast<int>(wParam);
+				EndWaiting(GetParent(button), &input);
+			}
+			return 0;
+		}
+		break;
+	case WM_CHAR:
+	case WM_SYSCHAR:
+	case WM_DEADCHAR:
+	case WM_SYSDEADCHAR:
+		if (waiting || SwallowKey)
+			return 0;
+		break;
+	case WM_KEYUP:
+	case WM_SYSKEYUP:
+		// The key up of a binding must not click the button or open the menu.
+		if (SwallowKey && static_cast<int>(wParam) == SwallowKey)
+		{
+			SwallowKey = 0;
+			return 0;
+		}
+		if (waiting)
+			return 0;
+		break;
+	case WM_LBUTTONDOWN:
+	case WM_LBUTTONDBLCLK:
+	case WM_MBUTTONDOWN:
+	case WM_MBUTTONDBLCLK:
+	case WM_RBUTTONDOWN:
+	case WM_RBUTTONDBLCLK:
+		if (waiting)
+		{
+			auto value = MouseButtonLeft;
+			if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK)
+				value = MouseButtonMiddle;
+			else if (message == WM_RBUTTONDOWN || message == WM_RBUTTONDBLCLK)
+				value = MouseButtonRight;
+			GameInput input{InputTypes::Mouse, value};
+			SwallowMouseUp = true;
+			EndWaiting(GetParent(button), &input);
+			return 0;
+		}
+		break;
+	case WM_LBUTTONUP:
+	case WM_MBUTTONUP:
+	case WM_RBUTTONUP:
+		if (SwallowMouseUp)
+		{
+			SwallowMouseUp = false;
+			return 0;
+		}
+		break;
+	case WM_KILLFOCUS:
+		SwallowKey = 0;
+		SwallowMouseUp = false;
+		if (waiting)
+			EndWaiting(GetParent(button), nullptr);
+		break;
+	default:
+		break;
+	}
+	return CallWindowProcW(ButtonProc, button, message, wParam, lParam);
 }
 
 std::vector<GameBindings> options::MapGameInput(GameInput key)
@@ -463,38 +631,8 @@ void options::ResetAllOptions()
 	PostProcessOptions();
 }
 
-void options::MyUserData_ReadLine(ImGuiContext* ctx, ImGuiSettingsHandler* handler, void* entry, const char* line)
-{
-	auto& keyValueStore = *static_cast<std::unordered_map<std::string, std::string>*>(entry);
-	std::string keyValue = line;
-	auto separatorPos = keyValue.find('=');
-	if (separatorPos != std::string::npos)
-	{
-		auto key = keyValue.substr(0, separatorPos);
-		auto value = keyValue.substr(separatorPos + 1, keyValue.size());
-		keyValueStore[key] = value;
-	}
-}
-
-void* options::MyUserData_ReadOpen(ImGuiContext* ctx, ImGuiSettingsHandler* handler, const char* name)
-{
-	// There is only one custom entry
-	return strcmp(name, "Settings") == 0 ? &settings : nullptr;
-}
-
-void options::MyUserData_WriteAll(ImGuiContext* ctx, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf)
-{
-	buf->appendf("[%s][%s]\n", handler->TypeName, "Settings");
-	for (const auto& setting : settings)
-	{
-		buf->appendf("%s=%s\n", setting.first.c_str(), setting.second.c_str());
-	}
-	buf->append("\n");
-}
-
 void options::PostProcessOptions()
 {
-	winmain::ImIO->FontGlobalScale = Options.UIScale;
 	Options.FramesPerSecond = Clamp(Options.FramesPerSecond.V, MinFps, MaxFps);
 	Options.UpdatesPerSecond = Clamp(Options.UpdatesPerSecond.V, MinUps, MaxUps);
 	Options.UpdatesPerSecond = std::max(Options.UpdatesPerSecond.V, Options.FramesPerSecond.V);
@@ -505,26 +643,62 @@ void options::PostProcessOptions()
 	winmain::UpdateFrameRate();
 }
 
+// The name of a key, in the language of the keyboard layout.
+static std::string GetKeyName(int virtualKey)
+{
+	auto scanCode = MapVirtualKeyW(static_cast<UINT>(virtualKey), 0);
+	auto keyData = static_cast<LONG>(scanCode << 16);
+	switch (virtualKey)
+	{
+	// These keys share their scan codes with the numeric keypad; the
+	// extended bit gives their own names.
+	case VK_PRIOR:
+	case VK_NEXT:
+	case VK_END:
+	case VK_HOME:
+	case VK_LEFT:
+	case VK_UP:
+	case VK_RIGHT:
+	case VK_DOWN:
+	case VK_INSERT:
+	case VK_DELETE:
+	case VK_DIVIDE:
+	case VK_NUMLOCK:
+	case VK_RCONTROL:
+	case VK_RMENU:
+	case VK_LWIN:
+	case VK_RWIN:
+	case VK_APPS:
+		keyData |= 1 << 24;
+		break;
+	default:
+		break;
+	}
+
+	wchar_t name[64];
+	if (scanCode && GetKeyNameTextW(keyData, name, 64) > 0)
+		return wintext::ToUtf8(name);
+
+	char buffer[16];
+	snprintf(buffer, sizeof buffer, "Key 0x%02X", virtualKey);
+	return buffer;
+}
+
+// One line, for the buttons of the controls dialog.
 std::string GameInput::GetFullInputDescription() const
 {
-	std::string prefix;
 	switch (Type)
 	{
 	case InputTypes::Keyboard:
-		prefix = "Keyboard\n";
-		break;
+		return GetShortInputDescription();
 	case InputTypes::Mouse:
-		prefix = "Mouse\n";
-		break;
+		return "Mouse " + GetShortInputDescription();
 	case InputTypes::GameController:
-		prefix = "Controller\n";
-		break;
+		return "Controller " + GetShortInputDescription();
 	case InputTypes::None:
 	default:
 		return "Unused";
 	}
-
-	return prefix + GetShortInputDescription();
 }
 
 std::string GameInput::GetShortInputDescription() const
@@ -535,52 +709,22 @@ std::string GameInput::GetShortInputDescription() const
 		"Left",
 		"Middle",
 		"Right",
-		"X1",
-		"X2",
-	};
-
-	static LPCSTR controllerButtons[] =
-	{
-		"A",
-		"B",
-		"X",
-		"Y",
-		"Back",
-		"Guide",
-		"Start",
-		"LeftStick",
-		"RightStick",
-		"LeftShoulder",
-		"RightShoulder",
-		"DpUp",
-		"DpDown",
-		"DpLeft",
-		"DpRight",
-		"Misc1",
-		"Paddle1",
-		"Paddle2",
-		"Paddle3",
-		"Paddle4",
-		"Touchpad",
 	};
 
 	std::string keyName;
 	switch (Type)
 	{
 	case InputTypes::Keyboard:
-		keyName = SDL_GetKeyName(Value);
+		keyName = GetKeyName(Value);
 		break;
 	case InputTypes::Mouse:
-		if (Value >= SDL_BUTTON_LEFT && Value <= SDL_BUTTON_X2)
+		if (Value >= MouseButtonLeft && Value <= MouseButtonRight)
 			keyName = mouseButtons[Value];
 		else
 			keyName = "MButton" + std::to_string(Value);
 		break;
 	case InputTypes::GameController:
-		if (Value >= SDL_CONTROLLER_BUTTON_A && Value < std::min(static_cast<int>(SDL_CONTROLLER_BUTTON_MAX), 21))
-			keyName = controllerButtons[Value];
-		else
-			keyName = "CButton" + std::to_string(Value);
+		keyName = "CButton" + std::to_string(Value);
 		break;
 	case InputTypes::None:
 	default:
@@ -590,24 +734,28 @@ std::string GameInput::GetShortInputDescription() const
 	return keyName;
 }
 
-const std::string& options::GetSetting(const std::string& key, const std::string& defaultValue)
+std::string options::GetSetting(const std::string& key, const std::string& defaultValue)
 {
-	auto setting = settings.find(key);
-	if (setting == settings.end())
+	for (const auto& setting : settings)
 	{
-		settings[key] = defaultValue;
-		if (ImGui::GetCurrentContext())
-			ImGui::MarkIniSettingsDirty();
-		return defaultValue;
+		if (setting.first == key)
+			return setting.second;
 	}
-	return setting->second;
+	settings.push_back({key, defaultValue});
+	return defaultValue;
 }
 
 void options::SetSetting(const std::string& key, const std::string& value)
 {
-	settings[key] = value;
-	if (ImGui::GetCurrentContext())
-		ImGui::MarkIniSettingsDirty();
+	for (auto& setting : settings)
+	{
+		if (setting.first == key)
+		{
+			setting.second = value;
+			return;
+		}
+	}
+	settings.push_back({key, value});
 }
 
 OptionBase::OptionBase(LPCSTR name): Name(name)

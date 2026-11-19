@@ -4,10 +4,7 @@
 #include "GroupData.h"
 #include "partman.h"
 #include "pb.h"
-#include "score.h"
-#include "winmain.h"
-#include "TTextBox.h"
-#include "fullscrn.h"
+#include "render.h"
 
 ColorRgba gdrv::current_palette[256]{};
 
@@ -28,7 +25,6 @@ gdrv_bitmap8::gdrv_bitmap8(int width, int height, bool indexed, bool bmpBuff)
 	Stride = width;
 	IndexedStride = width;
 	BitmapType = BitmapTypes::DibBitmap;
-	Texture = nullptr;
 	IndexedBmpPtr = nullptr;
 	BmpBufPtr1 = nullptr;
 	XPosition = 0;
@@ -59,7 +55,6 @@ gdrv_bitmap8::gdrv_bitmap8(const dat8BitBmpHeader& header)
 	XPosition = header.XPosition;
 	YPosition = header.YPosition;
 	Resolution = header.Resolution;
-	Texture = nullptr;
 
 	int sizeInBytes;
 	if (BitmapType == BitmapTypes::Spliced)
@@ -86,8 +81,6 @@ gdrv_bitmap8::~gdrv_bitmap8()
 	{
 		delete[] BmpBufPtr1;
 		delete[] IndexedBmpPtr;
-		if (Texture)
-			SDL_DestroyTexture(Texture);
 	}
 }
 
@@ -117,48 +110,10 @@ void gdrv_bitmap8::ScaleIndexed(float scaleX, float scaleY)
 	Stride = IndexedStride = Width = newWidht;
 	Height = newHeight;
 
-	delete IndexedBmpPtr;
+	delete[] IndexedBmpPtr;
 	IndexedBmpPtr = newIndBuf;
-	delete BmpBufPtr1;
+	delete[] BmpBufPtr1;
 	BmpBufPtr1 = new ColorRgba[Stride * Height];
-}
-
-void gdrv_bitmap8::CreateTexture(const char* scaleHint, int access)
-{
-	if (Texture != nullptr)
-	{
-		SDL_DestroyTexture(Texture);
-	}
-
-	UsingSdlHint hint{ SDL_HINT_RENDER_SCALE_QUALITY, scaleHint };
-	Texture = SDL_CreateTexture
-	(
-		winmain::Renderer,
-		SDL_PIXELFORMAT_BGRA32,
-		access,
-		Width, Height
-	);
-	SDL_SetTextureBlendMode(Texture, SDL_BLENDMODE_NONE);
-}
-
-void gdrv_bitmap8::BlitToTexture()
-{
-	assertm(Texture, "Updating null texture");
-	int pitch = 0;
-	ColorRgba* lockedPixels;
-	auto result = SDL_LockTexture
-	(
-		Texture,
-		nullptr,
-		reinterpret_cast<void**>(&lockedPixels),
-		&pitch
-	);
-	assertm(result == 0, "Updating non-streaming texture");
-	assertm(static_cast<unsigned>(pitch) == Width * sizeof(ColorRgba), "Padding on vScreen texture");
-
-	std::memcpy(lockedPixels, BmpBufPtr1, Width * Height * sizeof(ColorRgba));
-
-	SDL_UnlockTexture(Texture);
 }
 
 int gdrv::display_palette(ColorRgba* plt)
@@ -179,12 +134,12 @@ int gdrv::display_palette(ColorRgba* plt)
 	};
 
 	std::memset(current_palette, 0, sizeof current_palette);
-	std::memcpy(current_palette, sysPaletteColors, sizeof sysPaletteColors);	
+	std::memcpy(current_palette, sysPaletteColors, sizeof sysPaletteColors);
 
 	for (int index = 10; plt && index < 246; index++)
 	{
 		auto srcClr = plt[index];
-		srcClr.SetAlpha(0xff);		
+		srcClr.SetAlpha(0xff);
 		current_palette[index] = ColorRgba{ srcClr };
 		current_palette[index].SetAlpha(2);
 	}
@@ -213,6 +168,9 @@ void gdrv::fill_bitmap(gdrv_bitmap8* bmp, int width, int height, int xOff, int y
 
 void gdrv::fill_bitmap(gdrv_bitmap8* bmp, int width, int height, int xOff, int yOff, ColorRgba fillColor)
 {
+	if (bmp == render::vscreen)
+		render::MarkDirty(xOff, yOff, width, height);
+
 	auto bmpPtr = &bmp->BmpBufPtr1[bmp->Width * yOff + xOff];
 	for (; height > 0; --height)
 	{
@@ -225,6 +183,9 @@ void gdrv::fill_bitmap(gdrv_bitmap8* bmp, int width, int height, int xOff, int y
 void gdrv::copy_bitmap(gdrv_bitmap8* dstBmp, int width, int height, int xOff, int yOff, gdrv_bitmap8* srcBmp,
                        int srcXOff, int srcYOff)
 {
+	if (dstBmp == render::vscreen)
+		render::MarkDirty(xOff, yOff, width, height);
+
 	auto srcPtr = &srcBmp->BmpBufPtr1[srcBmp->Stride * srcYOff + srcXOff];
 	auto dstPtr = &dstBmp->BmpBufPtr1[dstBmp->Stride * yOff + xOff];
 
@@ -239,6 +200,9 @@ void gdrv::copy_bitmap(gdrv_bitmap8* dstBmp, int width, int height, int xOff, in
 void gdrv::copy_bitmap_w_transparency(gdrv_bitmap8* dstBmp, int width, int height, int xOff, int yOff,
                                       gdrv_bitmap8* srcBmp, int srcXOff, int srcYOff)
 {
+	if (dstBmp == render::vscreen)
+		render::MarkDirty(xOff, yOff, width, height);
+
 	auto srcPtr = &srcBmp->BmpBufPtr1[srcBmp->Stride * srcYOff + srcXOff];
 	auto dstPtr = &dstBmp->BmpBufPtr1[dstBmp->Stride * yOff + xOff];
 
@@ -259,6 +223,9 @@ void gdrv::copy_bitmap_w_transparency(gdrv_bitmap8* dstBmp, int width, int heigh
 
 void gdrv::ScrollBitmapHorizontal(gdrv_bitmap8* bmp, int xStart)
 {
+	if (bmp == render::vscreen)
+		render::MarkDirty(0, 0, bmp->Width, bmp->Height);
+
 	auto srcPtr = bmp->BmpBufPtr1;
 	auto startOffset = xStart >= 0 ? 0 : -xStart;
 	auto endOffset = xStart >= 0 ? xStart : 0;
@@ -270,18 +237,6 @@ void gdrv::ScrollBitmapHorizontal(gdrv_bitmap8* bmp, int xStart)
 	}
 }
 
-
-void gdrv::grtext_draw_ttext_in_box()
-{
-	for (const auto textBox : { pb::InfoTextBox, pb::MissTextBox })
-	{
-		if (textBox)
-		{
-			textBox->DrawImGui();
-		}
-	}
-}
-
 void gdrv::ApplyPalette(gdrv_bitmap8& bmp)
 {
 	if (bmp.BitmapType == BitmapTypes::None)
@@ -289,7 +244,7 @@ void gdrv::ApplyPalette(gdrv_bitmap8& bmp)
 	assertm(bmp.BitmapType != BitmapTypes::Spliced, "gdrv: wrong bitmap type");
 	assertm(bmp.IndexedBmpPtr != nullptr, "gdrv: non-indexed bitmap");
 
-	// Apply palette, flip horizontally 
+	// Apply palette, flip horizontally
 	auto dst = bmp.BmpBufPtr1;
 	for (auto y = bmp.Height - 1; y >= 0; y--)
 	{
@@ -299,13 +254,4 @@ void gdrv::ApplyPalette(gdrv_bitmap8& bmp)
 			*dst++ = current_palette[*src++];
 		}
 	}
-}
-
-void gdrv::CreatePreview(gdrv_bitmap8& bmp)
-{
-	if (bmp.Texture)
-		return;
-
-	bmp.CreateTexture("nearest", SDL_TEXTUREACCESS_STATIC);
-	SDL_UpdateTexture(bmp.Texture, nullptr, bmp.BmpBufPtr1, bmp.Width * 4);
 }
