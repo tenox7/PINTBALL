@@ -4,6 +4,7 @@
 #include "TPinballComponent.h"
 #include "pb.h"
 #include "Sound.h"
+#include "splash.h"
 #include "zdrv.h"
 
 
@@ -151,6 +152,7 @@ int loader::get_sound_id(int groupIndex)
 					fileName.insert(0, "sound");
 				}
 
+				splash::SetDetail(fileName.c_str());
 				std::string filePath;
 				float duration = -1;
 				for (int i = 0; i < 2; i++)

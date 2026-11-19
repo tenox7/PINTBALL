@@ -9,6 +9,7 @@
 #include "pb.h"
 #include "render.h"
 #include "Sound.h"
+#include "splash.h"
 #include "translations.h"
 #include "wintext.h"
 
@@ -127,6 +128,8 @@ namespace
 int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 {
 	Instance = instance;
+	// The load window shows as soon as the program starts.
+	splash::Show();
 	_set_new_handler(NewHandler);
 	if (!lpCmdLine)
 		lpCmdLine = "";
@@ -149,6 +152,7 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 	windowClass.lpszClassName = WindowClassName;
 	if (!RegisterClassW(&windowClass))
 	{
+		splash::Close();
 		pb::ShowMessageBox(MB_ICONHAND, "Could not create window", "RegisterClass failed.");
 		timeEndPeriod(1);
 		return 1;
@@ -158,6 +162,7 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 	                             CW_USEDEFAULT, CW_USEDEFAULT, 800, 556, nullptr, nullptr, instance, nullptr);
 	if (!MainWindow)
 	{
+		splash::Close();
 		pb::ShowMessageBox(MB_ICONHAND, "Could not create window", "CreateWindow failed.");
 		timeEndPeriod(1);
 		return 1;
@@ -179,6 +184,9 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 	do
 	{
 		restart = false;
+		// After a restart, the load window shows again.
+		splash::Show();
+		splash::SetStep(LoadStep::Start);
 
 		// First option initialization step: just load settings from .ini.
 		options::InitPrimary(iniPath);
@@ -213,6 +221,7 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 					message = message + (path[0] ? path : "working directory") + "\n";
 				}
 			}
+			splash::Close();
 			pb::ShowMessageBox(MB_ICONHAND, "Could not load game data", message.c_str());
 			midi::music_shutdown();
 			Sound::Close();
@@ -222,6 +231,7 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 			return 1;
 		}
 
+		splash::SetStep(LoadStep::Finish);
 		fullscrn::init();
 
 		pb::reset_table();
@@ -251,6 +261,9 @@ int winmain::WinMain(HINSTANCE instance, LPCSTR lpCmdLine)
 		fullscrn::set_screen_mode(Options.FullScreen);
 		fullscrn::window_size_changed();
 		UpdateWindow(MainWindow);
+		// The main window shows first, then the load window closes.
+		splash::Close();
+		SetForegroundWindow(MainWindow);
 
 		if (strstr(lpCmdLine, "-demo"))
 			pb::toggle_demo();
@@ -791,6 +804,7 @@ int __cdecl winmain::NewHandler(size_t)
 
 void winmain::memalloc_failure()
 {
+	splash::Close();
 	midi::music_stop();
 	Sound::Close();
 	const char* caption = pb::get_rc_string(Msg::STRING270);

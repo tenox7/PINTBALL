@@ -3,6 +3,7 @@
 
 #include "gdrv.h"
 #include "GroupData.h"
+#include "splash.h"
 #include "zdrv.h"
 
 short partman::_field_size[] =
@@ -128,6 +129,7 @@ DatFile* partman::load_records(LPCSTR lpFileName, bool fullTiltMode)
 		}
 
 		datFile->Groups.push_back(groupData);
+		splash::SetProgress(groupIndex + 1, header.NumberOfGroups);
 	}
 
 	fclose(fileHandle);

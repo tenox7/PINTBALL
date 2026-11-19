@@ -13,7 +13,7 @@ PROGRAM = PINTBALL.EXE
 
 OBJS = control.obj fullscrn.obj gdrv.obj GroupData.obj high_score.obj loader.obj \
        maths.obj midi.obj nudge.obj options.obj partman.obj pb.obj proj.obj render.obj \
-       score.obj Sound.obj SpaceCadetPinball.obj TBall.obj TBlocker.obj TBumper.obj \
+       score.obj Sound.obj SpaceCadetPinball.obj splash.obj TBall.obj TBlocker.obj TBumper.obj \
        TCircle.obj TCollisionComponent.obj TComponentGroup.obj TDemo.obj TDrain.obj \
        TEdgeManager.obj TEdgeSegment.obj TFlagSpinner.obj TFlipper.obj TFlipperEdge.obj \
        TGate.obj THole.obj timer.obj TKickback.obj TKickout.obj TLight.obj \

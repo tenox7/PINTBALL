@@ -7,6 +7,7 @@
 #include "midi.h"
 #include "pb.h"
 #include "render.h"
+#include "splash.h"
 #include "TBall.h"
 #include "TBlocker.h"
 #include "TBumper.h"
@@ -84,6 +85,7 @@ TPinballTable::TPinballTable(): TPinballComponent(nullptr, -1, false)
 	{
 		for (int i = 0; i < shortArrLength / 2; ++i)
 		{
+			splash::SetProgress(i, shortArrLength / 2);
 			int objectType = *shortArr;
 			short* shortArrPlus1 = shortArr + 1;
 			int groupIndex = *shortArrPlus1;

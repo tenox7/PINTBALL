@@ -23,6 +23,7 @@
 #include "GroupData.h"
 #include "partman.h"
 #include "score.h"
+#include "splash.h"
 #include "TFlipper.h"
 #include "TPinballTable.h"
 #include "TTextBox.h"
@@ -50,6 +51,7 @@ int pb::init()
 	if (DatFileName.empty())
 		return 1;
 	auto dataFilePath = make_path_name(DatFileName);
+	splash::SetStep(LoadStep::Data, DatFileName.c_str());
 	record_table = partman::load_records(dataFilePath.c_str(), FullTiltMode);
 
 	auto useBmpFont = 0;
@@ -102,6 +104,7 @@ int pb::init()
 	timer::init(150);
 	score::init();
 
+	splash::SetStep(LoadStep::Table);
 	MainTable = new TPinballTable();
 
 	high_score::read();
