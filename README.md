@@ -1,123 +1,104 @@
-<!-- markdownlint-disable-file MD033 -->
+# PINTBALL
 
-# SpaceCadetPinball
+3D Pinball for Windows - Space Cadet for [PINT 4.0](https://github.com/tenox7/pint),
+Windows NT 4.0 on ARM (Raspberry Pi 2, 3 and 4).
 
-## Summary
+PINTBALL is a port of [SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball),
+the reverse engineered source code of the game, to plain Win32:
 
-Reverse engineering of `3D Pinball for Windows - Space Cadet`, a game bundled with Windows.
+- GDI drawing
+- waveOut sound effects
+- MIDI music through the MCI sequencer
+- Win32 menus and dialogs
+
+It does not use SDL2 or Dear ImGui.
 
 ## How to play
 
-Place compiled executable into a folder containing original game resources (not included).\
-Supports data files from Windows and Full Tilt versions of the game.
+1. Get the ZIP file from [Releases](https://github.com/tenox7/PINTBALL/releases).
+2. Unzip it into a folder on the PINT machine or on a network share.
+3. Start `PINTBALL.EXE`.
 
-## Known source ports
+The game needs the data files of 3D Pinball for Windows: `PINBALL.DAT`, `PINBALL.MID`,
+the `SOUND*.WAV` files and the others. Windows NT 4.0, 2000 and XP keep them in
+`Program Files\Windows NT\Pinball`. PINTBALL looks for them in these folders:
 
-| Platform           | Author          | URL                                                                                                        |
-| ------------------ | --------------- | ---------------------------------------------------------------------------------------------------------- |
-| PS Vita            | Axiom           | <https://github.com/suicvne/SpaceCadetPinball_Vita>                                                        |
-| Emscripten         | alula           | <https://github.com/alula/SpaceCadetPinball> <br> Play online: <https://alula.github.io/SpaceCadetPinball> |
-| Nintendo Switch    | averne          | <https://github.com/averne/SpaceCadetPinball-NX>                                                           |
-| webOS TV           | mariotaku       | <https://github.com/webosbrew/SpaceCadetPinball>                                                           |
-| Android (WIP)      | Iscle           | https://github.com/Iscle/SpaceCadetPinball                                                                 |
-| Nintendo Wii       | MaikelChan      | https://github.com/MaikelChan/SpaceCadetPinball                                                            |
-| Nintendo 3DS       | MaikelChan      | https://github.com/MaikelChan/SpaceCadetPinball/tree/3ds                                                   |
-| Nintendo DS        | Headshotnoby    | https://github.com/headshot2017/3dpinball-nds                                                              |
-| Nintendo Wii U     | IntriguingTiles | https://github.com/IntriguingTiles/SpaceCadetPinball-WiiU                                                  |
-| PlayStation 2      | Headshotnoby    | https://github.com/headshot2017/3dpinball-ps2                                                              |
-| Sega Dreamcast     | Headshotnoby    | https://github.com/headshot2017/3dpinball-dc                                                               |
-| MorphOS            | BeWorld         | https://www.morphos-storage.net/?id=1688897                                                                |
-| AmigaOS 4          | rjd324          | http://aminet.net/package/game/actio/spacecadetpinball-aos4                                                |
-| Android (WIP)      | fexed           | https://github.com/fexed/Pinball-on-Android                                                                |
+- the current folder
+- the folder of `PINTBALL.EXE`
+- `Program Files\Windows NT\Pinball`
 
-Platforms covered by this project: desktop Windows, Linux and macOS.
+The data of Full Tilt! Pinball (`CADET.DAT`) also works.
 
-<br>
-<br>
-<br>
-<br>
-<br>
-<br>
+## Keys
 
-## Source
+| Action                          | Key              | Mouse         |
+| ------------------------------- | ---------------- | ------------- |
+| Left flipper                    | Z                | Left button   |
+| Right flipper                   | /                | Right button  |
+| Plunger                         | Space            | Middle button |
+| Table bump: left, right, bottom | X, `.`, Up arrow |               |
+| New game                        | F2               |               |
+| Pause                           | F3               |               |
+| Full screen                     | F4               |               |
+| Sound on or off                 | F5               |               |
+| Music on or off                 | F6               |               |
+| Controls dialog                 | F8               |               |
+| Menu bar on or off              | F9               |               |
+| Exit                            | Esc              |               |
 
-* `pinball.exe` from `Windows XP` (SHA-1 `2A5B525E0F631BB6107639E2A69DF15986FB0D05`) and its public PDB
-* `CADET.EXE` 32bit version from `Full Tilt! Pinball` (SHA-1 `3F7B5699074B83FD713657CD94671F2156DBEDC4`)
+Push F8 to change the keys. When the menu bar is hidden, the system menu (Alt+Space)
+has "Show Menu".
 
-## Tools used
+## Options
 
-`Ghidra`, `Ida`, `Visual Studio`
+PINTBALL keeps its options and high scores in `PINTBALL.INI`, in the folder of
+`PINTBALL.EXE`. It writes this file when it closes.
 
-## What was done
+| Command line option | Effect                             |
+| ------------------- | ---------------------------------- |
+| `-fullscreen`       | Start in full screen               |
+| `-demo`             | Start the demo                     |
+| `-noaudio`          | No sound effects and no music      |
+| `-reset`            | Set all options to their defaults  |
 
-* All structures were populated, globals and locals named.
-* All subs were decompiled, C pseudo code was converted to compilable C++. Loose (namespace?) subs were assigned to classes.
+## Sound and music
 
-## Compiling
+- Sound effects use waveOut, 16-bit stereo at 22050 Hz.
+- Music uses the MCI sequencer, so it needs a MIDI device, for example the FM synth of PINT.
+- Music is off at the first start. Push F6 to turn it on.
+- When PINTBALL finds no sound device, it turns the sound off and keeps this in
+  `PINTBALL.INI`. Push F5 to turn it on again.
 
-Project uses `C++11` and depends on `SDL2` libs.
+## Build
 
-### On Windows
+You need the PINT 4.0 SDK. In the `SpaceCadetPinball` folder, run:
 
-Download and unpack devel packages for `SDL2` and `SDL2_mixer`.\
-Set paths to them in `CMakeLists.txt`, see suggested placement in `/Libs`.\
-Compile with Visual Studio; tested with 2019.
+    nmake -f pint.mak
 
-### On Linux
+The `tenox7/pint40sdk` Docker image can also build it:
 
-Install devel packages for `SDL2` and `SDL2_mixer`.\
-Compile with CMake; tested with GCC 10, Clang 11.\
-To cross-compile for Windows, install a 64-bit version of mingw and its `SDL2` and `SDL2_mixer` distributions, then use the `mingwcc.cmake` toolchain.
+    docker run --rm -v <MSVC for ARM folder>:/opt/msvc -v "$PWD":/src tenox7/pint40sdk nmake -f pint.mak
 
-[![Packaging status](https://repology.org/badge/tiny-repos/spacecadetpinball.svg)](https://repology.org/project/spacecadetpinball/versions) 
+`pint.mak` builds only the Win32 sources. The SDL2, Dear ImGui and CMake files of
+SpaceCadetPinball are still in the tree, but PINTBALL does not use them.
 
-Some distributions provide a package in their repository. You can use those for easier dependency management and updates.
+## Not in PINTBALL
 
-This project is available as Flatpak on [Flathub](https://flathub.org/apps/details/com.github.k4zmu2a.spacecadetpinball).
+- Game controllers
+- The debug overlay, frame time graph, sprite viewer and font selection (these used Dear ImGui)
+- Linear filtering
+- Mouse buttons 4 and 5 (NT 4.0 has no messages for them)
+- A change of the display mode: full screen is a window without a border, at the size
+  of the desktop
 
-### On macOS
+## Credits
 
-Install XCode (or at least Xcode Command Line Tools with `xcode-select --install`) and CMake.
+- Original game: Cinematronics and Microsoft
+- SpaceCadetPinball: Andrey Muzychenko (k4zmu2a) and contributors,
+  <https://github.com/k4zmu2a/SpaceCadetPinball>
+- PINT 4.0: <https://github.com/tenox7/pint>
 
-**HomeBrew**
+## License
 
-You can easily install the build artifact by using `brew`.
-
-```sh
-brew tap draftbrew/tap
-brew install --no-quarantine space-cadet-pinball
-```
-
-Be aware that the flag `--no-quarantime` will disable macOS's Gatekeeper during installation.
-
-**Manual compilation:**
-
-* **Homebrew**: Install the `SDL2`, `SDL2_mixer` homebrew packages.
-* **MacPorts**: Install the `libSDL2`, `libSDL2_mixer` macports packages.
-
-Compile with CMake. Ensure that `CMAKE_OSX_ARCHITECTURES` variable is set for either `x86_64` Apple Intel or `arm64` for Apple Silicon.
-
-Tested with: macOS Big Sur (Intel) with Xcode 13 & macOS Montery Beta (Apple Silicon) with Xcode 13.
-
-**Automated compilation:**
-
-Run the `build-mac-app.sh` script from the root of the repository. The app will be available in a DMG file named `SpaceCadetPinball-<version>-mac.dmg`.
-
-Tested with: macOS Ventura (Apple Silicon) with Xcode Command Line Tools 14 & macOS Big Sur on GitHub Runner (Intel) with XCode 13.
-
-## Plans
-
-* ~~Decompile original game~~
-* ~~Resizable window, scaled graphics~~
-* ~~Loader for high-res sprites from CADET.DAT~~
-* ~~Cross-platform port using SDL2, SDL2_mixer, ImGui~~
-* Full Tilt Cadet features
-* Localization support
-* Maybe: Support for the other two tables - Dragon and Pirate
-* Maybe: Game data editor
-
-## On 64-bit bug that killed the game
-
-I did not find it, decompiled game worked in x64 mode on the first try.\
-It was either lost in decompilation or introduced in x64 port/not present in x86 build.\
-Based on public description of the bug (no ball collision), I guess that the bug was in `TEdgeManager::TestGridBox`
+The source code is under the MIT license, see [LICENSE](LICENSE).
+The game data files are not part of this license.
